@@ -217,8 +217,45 @@ projection independently rejects unknown values, non-list/incorrect types,
 duplicates and noncanonical order; stage and code observations survive only as
 finite diagnostic fields on a rejected partial/invalid-marker result. They
 cannot authorize configuration. An empty list means no allowlisted code was
-observed, not that no error occurred. The new stage/code diagnostic has not
-yet been exercised by an exact Windows source attempt.
+observed, not that no error occurred.
+
+At `a1c5e92`, [run41225667278](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41225667278)
+failed in `common-data-bound` on attempt1. Root and peer verified the sole
+2,034-byte artifact and 5,287-byte JSON, manifest and initial variant. Both
+Full CLR/x64 default results remained empty; the after-call constant was
+`not-observed`, DNV's four fields were null and MSB4184 was observed in both
+states. Actual image20261021.278.1 and VS18.11.12315.225 were independently
+checked. This identifies a formatted expression-evaluation boundary; it supplies
+no exact inner resource or missing-variable cause. Configuration, native probes,
+PREPARED and complete final tool/source seals were not delivered. It is not a
+native build pass, and every acceptance gate remains closed.
+
+The next source implementation adds only `dnv_error_resource`, with the finite
+values `not-run`, `not-observed` and `absolute-path-required`. The last value
+requires a nonzero Full CLR/x64 default-only result, no returned-stage marker,
+and an error header from the exact authored project/location. Its complete
+MSB4184 body must equal the fixed two-argument DNV GetFolderPath expression
+and the exact English
+[Argument_AbsolutePathRequired resource](https://github.com/microsoft/referencesource/blob/ec9fa9ae770d522a5b5f0607898044b7478574a3/mscorlib/mscorlib.txt#L720).
+The expected method text follows the reference
+[MSBuild renderer](https://github.com/dotnet/msbuild/blob/86743d0545fba3d043d4e7aaa12891edb3fd56e6/src/Build/Evaluation/Expander.Function.cs#L1068-L1117)
+and its [inner-message formatting](https://github.com/dotnet/msbuild/blob/86743d0545fba3d043d4e7aaa12891edb3fd56e6/src/Build/Evaluation/Expander.Function.cs#L591-L602).
+This reuses an existing resource identity; no source catalog is expanded.
+
+Only identical complete headers, including project location and position form,
+can deduplicate; equal bodies at different owned locations stay unobserved.
+A conflicting owned error, global
+or foreign header, other expression/argument, embedded resource mention,
+unknown/localized message or extra suffix cannot establish the resource match.
+Unknown numeric codes can only invalidate this one predicate and never enter
+the public code allowlist. Public projection independently checks the enum and
+its coherent rejected context. No raw body, path, message, length, digest or
+unknown value is published. The existing32KiB capture, two environments,
+process ownership and all default configuration requirements stay unchanged.
+Even a matched resource would be a format observation, not the private path,
+failing variable, exact binary/source correspondence or an approved repair.
+The new predicate is native pending; it adds no call, marker, environment,
+flag, source input or SystemDrive binding.
 
 ### Manual source build
 

@@ -82,6 +82,7 @@ def test_common_data_markers_are_fixed_typed_states_without_private_output(modul
         'folder': 'nonempty', 'root': 'nonempty', 'rooted': True,
         'programdata_equal': True, 'allusersprofile_equal': True,
         'do_not_verify_call': 'returned', 'msbuild_codes': [],
+        'dnv_error_resource': 'not-observed',
         'do_not_verify': {'empty': False, 'rooted': True, 'programdata_equal': True, 'allusersprofile_equal': True}}
     assert 'private' not in json.dumps(value)
     assert module.common_data_markers(0, b'\xef\xbb\xbf' + common_markers()) == value
@@ -156,6 +157,94 @@ def test_common_data_codes_require_owned_error_headers_and_deduplicate_canonical
     assert value['msbuild_codes'] == ['MSB4184', 'MSB4185', 'MSB4186']
     assert 'private' not in json.dumps(value) and str(project) not in json.dumps(value)
     assert value['status'] == 'rejected'
+
+
+def common_dnv_error(project):
+    # Reference renderer joins the original qualified argument strings; the
+    # exact English inner slot is mscorlib Argument_AbsolutePathRequired.
+    return (f'{project}(10,7): error MSB4184: The expression "[System.Environment]::GetFolderPath('
+        'SpecialFolder.CommonApplicationData, SpecialFolderOption.DoNotVerify)" cannot be evaluated. '
+        'Absolute path information is required.\n').encode()
+
+
+@pytest.mark.parametrize('ending', [b'\n', b'\r\n'])
+def test_common_data_owned_dnv_resource_is_an_exact_partial_format_observation(module, tmp_path, ending):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    raw = common_markers(empty='True').splitlines(keepends=True)[0] + common_dnv_error(project)*2
+    value = module.common_data_markers(1, raw.replace(b'\n', ending), project=project)
+    assert value['dnv_error_resource'] == 'absolute-path-required' and value['msbuild_codes'] == ['MSB4184']
+    assert value['status'] == 'rejected' and value['folder'] == 'empty' and value['do_not_verify_call'] == 'not-observed'
+    assert all(v is None for v in value['do_not_verify'].values())
+    observation = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE',
+        'origin_stable': 'verified', 'baseline': module.common_data_result(), 'bound': value}
+    assert module.safe_common_data_observation(observation) == observation
+    assert str(project) not in json.dumps(observation) and 'The expression' not in json.dumps(observation)
+
+
+@pytest.mark.parametrize('mutation', ['global', 'foreign', 'default-call', 'other-call', 'embedded', 'resource', 'suffix', 'punctuation'])
+def test_common_data_dnv_resource_rejects_unowned_or_nonexact_inner_slots(module, tmp_path, mutation):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    line = common_dnv_error(project)
+    if mutation == 'global': line = line.replace((str(project)+'(10,7)').encode(), b'MSBUILD')
+    if mutation == 'foreign': line = line.replace(str(project).encode(), b'foreign/PRIVATE-COMMON-DATA.proj')
+    if mutation == 'default-call': line = line.replace(b', SpecialFolderOption.DoNotVerify', b'')
+    if mutation == 'other-call': line = line.replace(b'GetFolderPath', b'GetPathRoot')
+    if mutation == 'embedded': line = line.replace(b'cannot be evaluated. ', b'cannot be evaluated. private message mentions: ')
+    if mutation == 'resource': line = line.replace(b'Absolute path information is required.', b'private unknown resource')
+    if mutation == 'suffix': line = line.rstrip(b'\n') + b' [private-context]\n'
+    if mutation == 'punctuation': line = line.replace(b'is required.', b'is required')
+    raw = common_markers(empty='True').splitlines(keepends=True)[0] + line
+    assert module.common_data_markers(1, raw, project=project)['dnv_error_resource'] == 'not-observed'
+
+
+@pytest.mark.parametrize('mutation', ['returned', 'conflicting-message', 'conflicting-code'])
+def test_common_data_dnv_resource_cannot_override_conflicting_owned_context(module, tmp_path, mutation):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    raw = common_markers().splitlines(keepends=True)[0] + common_dnv_error(project)
+    if mutation == 'returned': raw += common_markers().splitlines(keepends=True)[1]
+    if mutation == 'conflicting-message': raw += common_dnv_error(project).replace(b'Absolute path information is required.', b'private conflicting inner slot')
+    if mutation == 'conflicting-code': raw += common_dnv_error(project).replace(b'MSB4184', b'MSB9999')
+    value = module.common_data_markers(1, raw, project=project)
+    assert value['dnv_error_resource'] == 'not-observed' and 'MSB9999' not in value['msbuild_codes']
+
+
+@pytest.mark.parametrize('second_position', [b'(99,9)', b'(10,7,10,7)'])
+def test_common_data_equal_resource_body_at_another_owned_location_is_not_an_identical_summary(module, tmp_path, second_position):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    original = common_dnv_error(project)
+    second = original.replace(b'(10,7)', second_position, 1)
+    raw = common_markers(empty='True').splitlines(keepends=True)[0] + original + second
+    value = module.common_data_markers(1, raw, project=project)
+    assert value['dnv_error_resource'] == 'not-observed'
+    assert value['msbuild_codes'] == ['MSB4184'] and value['status'] == 'rejected'
+
+
+def test_common_data_matching_dnv_resource_never_authorizes_empty_default(module, tmp_path, monkeypatch):
+    output, _folder, _executable, roots, initial = common_environment_fixture(module, tmp_path, monkeypatch)
+    raw = common_markers(empty='True').splitlines(keepends=True)[0] + common_dnv_error(output/'PRIVATE-COMMON-DATA.proj')
+    monkeypatch.setattr(module, 'capture_common_data', lambda *_: (1, raw))
+    with pytest.raises(ValueError, match='Full CLR x64'):
+        module.common_data_environment(output, roots, initial, {})
+    value = module.safe_build_environment_observation()['common_data']['bound']
+    assert value['dnv_error_resource'] == 'absolute-path-required' and value['status'] == 'rejected'
+
+
+@pytest.mark.parametrize('invalid', [True, [], 'private-resource', 'path-empty', 'not-run'])
+def test_common_data_public_resource_enum_rejects_unknown_types_and_states(module, invalid):
+    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+        'baseline': module.common_data_result(), 'bound': module.common_data_result('process-rejected')}
+    value['bound']['dnv_error_resource'] = invalid
+    assert module.safe_common_data_observation(value) is None
+
+
+@pytest.mark.parametrize('field,replacement', [('do_not_verify_call','returned'), ('msbuild_codes',[]), ('reason','invalid-markers')])
+def test_common_data_public_resource_match_requires_coherent_partial_context(module, tmp_path, field, replacement):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    value = module.common_data_markers(1, common_markers().splitlines(keepends=True)[0] + common_dnv_error(project), project=project)
+    value[field] = replacement
+    observation = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE',
+        'origin_stable': 'verified', 'baseline': module.common_data_result(), 'bound': value}
+    assert module.safe_common_data_observation(observation) is None
 
 
 @pytest.mark.parametrize('line', [

@@ -78,6 +78,7 @@ COMMON_DATA_REASONS = frozenset({'none', 'not-run', 'process-rejected', 'invalid
     'invalid-utf8', 'output-limit', 'deadline', 'pipe-unavailable'})
 COMMON_DATA_CALL_STAGES = frozenset({'not-run', 'not-observed', 'returned'})
 COMMON_DATA_MSB_CODES = ('MSB4184', 'MSB4185', 'MSB4186')
+COMMON_DATA_DNV_ERRORS = frozenset({'not-run', 'not-observed', 'absolute-path-required'})
 COMMON_DATA_PROJECT = r'''<Project DefaultTargets="R19Root" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Target Name="R19Folder">
     <PropertyGroup>
@@ -1332,6 +1333,7 @@ def common_data_result(reason='not-run'):
         'runtime': 'unavailable', 'x64': None, 'folder': 'unavailable', 'root': 'not-run',
         'rooted': None, 'programdata_equal': None, 'allusersprofile_equal': None,
         'do_not_verify_call': 'not-run' if reason == 'not-run' else 'not-observed', 'msbuild_codes': [],
+        'dnv_error_resource': 'not-run' if reason == 'not-run' else 'not-observed',
         'do_not_verify': {'empty': None, 'rooted': None, 'programdata_equal': None, 'allusersprofile_equal': None}}
 
 
@@ -1352,16 +1354,33 @@ def common_data_markers(code, data, *, project=None):
     lines = [line.removesuffix('\r').lstrip(' \t') for line in text.split('\n') if 'R19-ASR-COMMON' in line]
     # Only a fixed MSBUILD origin or this actual authored project can supply a
     # code. Unknown paths/messages/expressions are never searched for tokens.
-    origins = ['MSBUILD']
+    origins, owned_origin = ['MSBUILD'], None
     if (isinstance(project, Path) and project.is_absolute() and project.name == 'PRIVATE-COMMON-DATA.proj'
             and len(str(project)) <= 32767 and not any(c in str(project) for c in ('\r', '\n', '\x00'))):
         position = r'\([1-9][0-9]{0,6},[1-9][0-9]{0,6}(?:,[1-9][0-9]{0,6},[1-9][0-9]{0,6})?\)'
-        origins.append(re.escape(str(project)) + position)
+        owned_origin = re.escape(str(project)) + position
+        origins.append(owned_origin)
     header = re.compile(r'^[ \t]*(?:' + '|'.join(origins) + r')[ \t]*:[ \t]+error[ \t]+(MSB418[456]):(?:[ \t]|$)')
     codes = sorted({match[1] for line in text.split('\n') if (match := header.match(line.removesuffix('\r')))})
     folder = re.fullmatch(r'R19-ASR-COMMON-V1 folder;runtime=(Full|Core|Mono);x64=(True|False);empty=(True|False);programdata=(True|False);allusers=(True|False)', lines[0]) if lines else None
     returned = 'R19-ASR-COMMON-V1 do-not-verify-returned'
     stage = 'returned' if folder and len(lines) >= 2 and lines[1] == returned and lines.count(returned) == 1 else 'not-observed'
+    resource = 'not-observed'
+    if owned_origin is not None and code != 0 and folder and folder[1] == 'Full' and folder[2] == 'True' and len(lines) == 1:
+        # Other numeric codes can only invalidate this predicate, never enter
+        # the public code allowlist or resource catalog.
+        owned_header = re.compile(r'^[ \t]*' + owned_origin + r'[ \t]*:[ \t]+error[ \t]+(MSB[0-9]{4}):[ \t]+')
+        # Retain the entire private header, including location/position form:
+        # equal code/body at a second location is not an identical summary.
+        owned_errors = {(match[0], match[1], line[match.end():]) for raw in text.split('\n')
+            if (match := owned_header.match(line := raw.removesuffix('\r')))}
+        # Reference MSBuild renders the original qualified string arguments.
+        # Compare the complete inner slot; never search unknown text for it.
+        expression = '[System.Environment]::GetFolderPath(SpecialFolder.CommonApplicationData, SpecialFolderOption.DoNotVerify)'
+        message = 'Absolute path information is required.'
+        expected = 'The expression "' + expression + '" cannot be evaluated. ' + message
+        if len(owned_errors) == 1 and next(iter(owned_errors))[1:] == ('MSB4184', expected):
+            resource = ARGUMENT_MESSAGES[message]
     unverified = re.fullmatch(r'R19-ASR-COMMON-V1 do-not-verify;empty=(True|False);rooted=(True|False);programdata=(True|False);allusers=(True|False)', lines[2]) if len(lines) >= 3 else None
     root = re.fullmatch(r'R19-ASR-COMMON-V1 root;empty=(True|False);rooted=(True|False)', lines[3]) if len(lines) == 4 else None
     if (not folder or len(lines) > 4 or (len(lines) >= 2 and stage != 'returned')
@@ -1371,7 +1390,7 @@ def common_data_markers(code, data, *, project=None):
     value.update(status='observed' if code == 0 else 'rejected', runtime=folder[1].lower(),
         x64=folder[2] == 'True', folder='empty' if folder[3] == 'True' else 'nonempty',
         programdata_equal=folder[4] == 'True', allusersprofile_equal=folder[5] == 'True',
-        do_not_verify_call=stage, msbuild_codes=codes)
+        do_not_verify_call=stage, msbuild_codes=codes, dnv_error_resource=resource)
     if unverified:
         value['do_not_verify'] = dict(zip(('empty', 'rooted', 'programdata_equal', 'allusersprofile_equal'),
                                         (unverified[i] == 'True' for i in range(1, 5))))
@@ -1404,6 +1423,14 @@ def safe_common_data_observation(value):
         if (type(stage) is not str or stage not in COMMON_DATA_CALL_STAGES or type(codes) is not list
                 or len(codes) > 3 or any(type(c) is not str or c not in COMMON_DATA_MSB_CODES for c in codes)
                 or codes != sorted(set(codes))):
+            return None
+        resource = item['dnv_error_resource']
+        if (type(resource) is not str or resource not in COMMON_DATA_DNV_ERRORS
+                or (item['status'] == 'not-run') != (resource == 'not-run')):
+            return None
+        if resource == 'absolute-path-required' and (item['status'] != 'rejected'
+                or item['reason'] != 'process-rejected' or item['runtime'] != 'full' or item['x64'] is not True
+                or item['root'] != 'not-run' or stage != 'not-observed' or 'MSB4184' not in codes):
             return None
         unverified = item['do_not_verify']
         if (type(unverified) is not dict or set(unverified) != set(common_data_result()['do_not_verify'])
