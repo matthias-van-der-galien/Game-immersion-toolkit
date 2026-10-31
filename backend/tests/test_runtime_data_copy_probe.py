@@ -24,6 +24,7 @@ from backend.lexirise_settings import account_settings
 from backend.languages import translation_language
 from backend.reading import LexiriseReadingService
 from backend.runtime_bundle import RuntimeLayout
+from backend.storage import TranscriptStorePoisonedError
 
 
 @pytest.fixture
@@ -55,11 +56,7 @@ def fixture(tmp_path, monkeypatch):
             self.registered = {role: SimpleNamespace(created=True, resumed=False, exited=False, closed=False)
                                for role in ('frontend', 'api')}
             def initialize():
-                connections = []
-                try:
-                    probe._SetupStore(self.layout.data_root/'transcript-v2.db', connections)
-                finally:
-                    for connection in connections: connection.close()
+                probe.TranscriptStore(self.layout.data_root/'transcript-v2.db')
                 self.exports = LexiriseService(self.layout.data_root/'lexirise')
                 self.reading = LexiriseReadingService(self.layout.data_root/'lexirise', self.exports)
             if grammar_probe:
@@ -118,38 +115,34 @@ def fixture(tmp_path, monkeypatch):
                 return actual_response(value, request)
         return actual_response(value, request)
     def actual_response(value, request):
-        connections = []
-        try:
-            store = probe._SetupStore(value.adapter.layout.data_root/'transcript-v2.db', connections)
-            if isinstance(request, probe.Request):
-                if request.get_method() == 'PATCH':
-                    assert request.data == b'{"favorite":true}' and request.full_url.endswith('/1/favorite')
-                    result = store.set_favorite(1, True).model_dump(mode='json')
-                    calls.append(('favorite-sql', value.adapter.host))
-                else:
-                    assert value.case == probe.GRAMMAR_CASE
-                    assert request.get_header('X-proxy-transcript-account') == 'legacy'
-                    line = store.get(1)
-                    reader = value.adapter.host.reader(line)
-                    if request.get_method() == 'GET':
-                        assert request.full_url.endswith('/1/reading')
-                        result = reader.analyze(line.source_text)
-                    else:
-                        assert request.get_method() == 'POST' and request.full_url.endswith('/1/reading/grammar')
-                        assert request.get_header('X-proxy-transcript') == 'lexirise'
-                        body = json.loads(request.data)
-                        assert set(body) == {'slug', 'known'} and body['known'] is True
-                        result = reader.set_grammar_known(line.source_text, body['slug'], body['known'])
-                        calls.append(('grammar-sql' if result else 'grammar-404', value.adapter.host))
-                        if result is None:
-                            raise probe.HTTPError(request.full_url, 404, 'authored missing grammar', {},
-                                io.BytesIO(b'{"detail":"Grammar rule not found in this line"}'))
+        store = probe.TranscriptStore(value.adapter.layout.data_root/'transcript-v2.db')
+        if isinstance(request, probe.Request):
+            if request.get_method() == 'PATCH':
+                assert request.data == b'{"favorite":true}' and request.full_url.endswith('/1/favorite')
+                result = store.set_favorite(1, True).model_dump(mode='json')
+                calls.append(('favorite-sql', value.adapter.host))
             else:
-                assert request == 'http://127.0.0.1:8766/api/lines?game=hito'
-                result = [row.model_dump(mode='json') for row in store.list()]
-            data = json.dumps(result).encode()
-        finally:
-            for connection in connections: connection.close()
+                assert value.case == probe.GRAMMAR_CASE
+                assert request.get_header('X-proxy-transcript-account') == 'legacy'
+                line = store.get(1)
+                reader = value.adapter.host.reader(line)
+                if request.get_method() == 'GET':
+                    assert request.full_url.endswith('/1/reading')
+                    result = reader.analyze(line.source_text)
+                else:
+                    assert request.get_method() == 'POST' and request.full_url.endswith('/1/reading/grammar')
+                    assert request.get_header('X-proxy-transcript') == 'lexirise'
+                    body = json.loads(request.data)
+                    assert set(body) == {'slug', 'known'} and body['known'] is True
+                    result = reader.set_grammar_known(line.source_text, body['slug'], body['known'])
+                    calls.append(('grammar-sql' if result else 'grammar-404', value.adapter.host))
+                    if result is None:
+                        raise probe.HTTPError(request.full_url, 404, 'authored missing grammar', {},
+                            io.BytesIO(b'{"detail":"Grammar rule not found in this line"}'))
+        else:
+            assert request == 'http://127.0.0.1:8766/api/lines?game=hito'
+            result = [row.model_dump(mode='json') for row in store.list()]
+        data = json.dumps(result).encode()
         class Response:
             status = 200
             def __enter__(self): return self
@@ -656,14 +649,24 @@ def test_actual_closed_connections_leave_wal_dependent_favorite_for_plain_copy(f
 
 def test_nonempty_wal_that_no_longer_changes_main_database_is_not_dependency_proof(fixture, monkeypatch, capsys):
     value = fixture.make(probe.WAL_CASE)
-    favorite = probe._SetupStore.set_favorite
+    favorite = probe.TranscriptStore.set_favorite
+    scope = probe.TranscriptStore._connection_scope
+    checkpoint_favorite = False
+    @contextmanager
+    def checkpoint_scope(store):
+        with scope(store) as connection:
+            yield connection
+            if checkpoint_favorite:
+                # The same real operation connection, before its one close.
+                connection.commit()
+                assert connection.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()[0] == 0
     def checkpointed(store, *args):
-        result = favorite(store, *args)
-        # An actual SQLite checkpoint in the authored API double's already
-        # owned connection; no fabricated WAL or extra holder is introduced.
-        assert store._owned_connections[-1].execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()[0] == 0
-        return result
-    monkeypatch.setattr(probe._SetupStore, 'set_favorite', checkpointed)
+        nonlocal checkpoint_favorite
+        checkpoint_favorite = True
+        try: return favorite(store, *args)
+        finally: checkpoint_favorite = False
+    monkeypatch.setattr(probe.TranscriptStore, '_connection_scope', checkpoint_scope)
+    monkeypatch.setattr(probe.TranscriptStore, 'set_favorite', checkpointed)
     assert value.run() == 2 and value.copy_attempts == 0 and value.released
     assert not value.wal_dependency and not value.adapter.poisoned
     assert (value.source.path/'data/transcript-v2.db-wal').stat().st_size > 32
@@ -812,21 +815,30 @@ def test_strict_helper_refusals_hold_but_c3_c4_keep_existing_safe_error_policy(f
     assert not value.released and value.adapter.generation == 1 and value.copy_attempts == 1
 
 
-def test_wal_policy_configures_all_real_authored_constructor_paths_and_restores_connect(fixture):
+def test_wal_policy_configures_all_real_authored_constructor_paths_and_restores_connect(fixture, monkeypatch):
     value = fixture.make(); value.prepare()
     original = sqlite3.connect
-    connections = []
+    connect = probe.TranscriptStore._connect
+    connections, configured = [], []
+    def observed(store):
+        connection = connect(store)
+        configured.append(connection.getconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE))
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(probe.TranscriptStore, '_connect', observed)
     with runtime_probe._authored_wal_connections(value.adapter.layout) as policy:
-        probe._SetupStore(value.adapter.layout.data_root/'transcript-v2.db', connections)
+        store = probe.TranscriptStore(value.adapter.layout.data_root/'transcript-v2.db')
         exports = LexiriseService(value.adapter.layout.data_root/'lexirise')
         reading = LexiriseReadingService(value.adapter.layout.data_root/'lexirise', exports)
         reading.quiesce(1)
         policy.require_stores()
         assert policy.configured == {'transcript', 'exports', 'reading'} and policy.opens == 3
     assert sqlite3.connect is original
+    assert not store._connection_failures
+    assert configured == [True]
     for connection in connections:
-        assert connection.getconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE) is True
-        connection.close()
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            connection.execute('SELECT 1')
 
 
 def test_wal_policy_does_not_keep_successful_connections_alive_and_bounds_opens(fixture):
@@ -850,6 +862,38 @@ def test_wal_policy_does_not_keep_successful_connections_alive_and_bounds_opens(
     assert len(calls) == 256
 
 
+def test_real_wal_survives_all_transcript_operation_closes_without_an_extra_holder(fixture, monkeypatch):
+    value = fixture.make(); value.prepare()
+    source = value.adapter.layout.data_root/'transcript-v2.db'
+    raw_connect, connect = sqlite3.connect, probe.TranscriptStore._connect
+    actual, configured = [], []
+    def observed(store):
+        connection = connect(store)
+        configured.append(connection.getconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE))
+        actual.append(connection)  # Test observation of closed objects only.
+        return connection
+    monkeypatch.setattr(probe.TranscriptStore, '_connect', observed)
+    with runtime_probe._authored_wal_connections(value.adapter.layout) as policy:
+        store = probe.TranscriptStore(source)
+        assert store.get(1).favorite is False
+        assert store.set_favorite(1, True).favorite is True
+        assert policy.opens == 3 and policy.configured == {'transcript'}
+    assert sqlite3.connect is raw_connect and configured == [True, True, True]
+    assert not store._connection_failures
+    for connection in actual:
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'): connection.execute('SELECT 1')
+    assert source.with_name(source.name+'-wal').stat().st_size > 32
+    assert source.with_name(source.name+'-shm').stat().st_size > 0
+    main = value.target.path/'owned-main-only.db'
+    full = value.target.path/'owned-full-set.db'
+    shutil.copy2(source, main); shutil.copy2(source, full)
+    for suffix in ('-wal','-shm'): shutil.copy2(source.with_name(source.name+suffix), full.with_name(full.name+suffix))
+    with closing(raw_connect(main.as_uri()+'?mode=ro&immutable=1', uri=True)) as connection:
+        assert connection.execute('SELECT favorite FROM transcript_lines WHERE id=1').fetchone()[0] == 0
+    with closing(raw_connect(full.as_uri()+'?mode=ro', uri=True)) as connection:
+        assert connection.execute('SELECT favorite FROM transcript_lines WHERE id=1').fetchone()[0] == 1
+
+
 @pytest.mark.parametrize('missing', [None, 'reading', 'preimport'])
 def test_fixed_api_wal_patch_precedes_service_import_and_requires_actual_constructor_roles(fixture, monkeypatch, missing):
     value = fixture.make(); value.prepare()
@@ -859,10 +903,7 @@ def test_fixed_api_wal_patch_precedes_service_import_and_requires_actual_constru
     monkeypatch.delitem(runtime_probe.sys.modules, 'backend.api', raising=False)
     class Runtime:
         def __init__(self):
-            connections = []
-            try: probe._SetupStore(layout.data_root/'transcript-v2.db', connections)
-            finally:
-                for connection in connections: connection.close()
+            probe.TranscriptStore(layout.data_root/'transcript-v2.db')
             exports = LexiriseService(layout.data_root/'lexirise')
             if missing != 'reading': LexiriseReadingService(layout.data_root/'lexirise', exports).quiesce(1)
         def start_updates(self): pass
@@ -1349,18 +1390,18 @@ def test_setup_connections_include_constructor_and_are_explicitly_closed(tmp_pat
 
 def test_setup_exception_still_closes_constructor_connection(tmp_path, monkeypatch):
     observed = []
-    original = probe._SetupStore._connect
+    original = probe.TranscriptStore._connect
     def connect(self):
         connection = original(self); observed.append(connection); return connection
     def fail_add(*_args, **_kwargs): raise RuntimeError('authored add refusal')
-    monkeypatch.setattr(probe._SetupStore, '_connect', connect)
-    monkeypatch.setattr(probe._SetupStore, 'add', fail_add)
+    monkeypatch.setattr(probe.TranscriptStore, '_connect', connect)
+    monkeypatch.setattr(probe.TranscriptStore, 'add', fail_add)
     with pytest.raises(RuntimeError, match='authored add refusal'): probe.seed_authored(tmp_path/'transcript.db')
     assert len(observed) == 1
     with pytest.raises(sqlite3.ProgrammingError): observed[0].execute('SELECT 1')
 
 
-def test_setup_close_refusal_attempts_every_connection_and_is_not_hidden(tmp_path, monkeypatch):
+def test_setup_close_refusal_retains_failed_operation_owner_without_retry(tmp_path, monkeypatch):
     original = probe.TranscriptStore._connect
     actual, attempts = [], []
     class Connection:
@@ -1376,9 +1417,16 @@ def test_setup_close_refusal_attempts_every_connection_and_is_not_hidden(tmp_pat
         wrapped = Connection(original(self)); actual.append(wrapped); return wrapped
     monkeypatch.setattr(probe.TranscriptStore, '_connect', connect)
     try:
-        with pytest.raises(probe.DataCopyFailure, match='setup-close-unconfirmed'):
+        with pytest.raises(probe.DataCopyFailure, match='setup-close-unconfirmed') as raised:
             probe.seed_authored(tmp_path/'transcript.db')
-        assert len(actual) == 3 and set(attempts) == set(actual)
+        assert len(actual) == 1 and attempts == actual
+        failure = raised.value.__cause__
+        assert isinstance(failure, probe.TranscriptConnectionCloseError)
+        assert failure.connection is actual[0] and failure.store._connection_failures == [failure]
+        assert actual[0].connection.execute('SELECT 1').fetchone()[0] == 1
+        with pytest.raises(TranscriptStorePoisonedError) as repeated:
+            failure.store.count()
+        assert repeated.value.failure is failure and attempts == actual and len(actual) == 1
     finally:
         for wrapped in actual: wrapped.connection.close()
 

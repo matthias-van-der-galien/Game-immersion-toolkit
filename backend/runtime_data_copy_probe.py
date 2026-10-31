@@ -24,7 +24,7 @@ from .bundle_host import (HostProbeError, SyntheticHandoff, SyntheticHostCoordin
 from .models import TextMatch
 from .runtime_host import FrozenProbeHost, HostProbeFailure, hold_keeper_recovery
 from .runtime_probe import GRAMMAR_TEXT, GRAMMAR_SLUG, GRAMMAR_ABSENT_SLUG, GRAMMAR_CHOICE_KEY
-from .storage import TranscriptStore
+from .storage import TranscriptStore, TranscriptConnectionCloseError
 
 SCHEMA = 'proxy-r19-frozen-data-copy-probe-v1'
 CASE = 'authored-data-copy'
@@ -204,22 +204,10 @@ def _row(value):
     return {key: value[key] for key in ROW_FIELDS}
 
 
-class _SetupStore(TranscriptStore):
-    def __init__(self, path, connections):
-        self._owned_connections = connections
-        super().__init__(path)
-
-    def _connect(self):
-        connection = super()._connect()
-        self._owned_connections.append(connection)
-        return connection
-
-
 def seed_authored(path):
-    """Actual production SQL, with explicit ownership of every setup connection."""
-    connections = []
+    """Production operation scopes own close; never retry their failed handle."""
     try:
-        store = _SetupStore(path, connections)
+        store = TranscriptStore(path)
         rows = []
         for index, (chinese, english) in enumerate((('这是保留的中文。', 'This Chinese text stays.'),
                 ('第二行保持原样。', 'The second line stays unchanged.')), 1):
@@ -233,15 +221,8 @@ def seed_authored(path):
                 created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
             rows.append(_row(line.model_dump(mode='json')))
         return rows
-    finally:
-        failed = False
-        for connection in reversed(connections):
-            try:
-                connection.close()
-            except BaseException:
-                failed = True
-        if failed:
-            raise DataCopyFailure('setup-close-unconfirmed')
+    except TranscriptConnectionCloseError as error:
+        raise DataCopyFailure('setup-close-unconfirmed') from error
 
 
 @contextmanager
@@ -494,6 +475,7 @@ class _DataCopyProbe:
         self.wal_set_observed = self.wal_dependency = False
         self.verification_ownership = []
         self.core_copy_failure = None
+        self.setup_failure = None
         self.grammar_baseline = self.grammar_unknown_refused = self.grammar_written = False
         self.grammar_snapshot = self.grammar_restarted = False
         self.grammar_ack_state = None
@@ -613,6 +595,7 @@ class _DataCopyProbe:
             (layout.data_root/'authored-payload.bin').write_bytes(AUTHORED_PAYLOAD)
         except BaseException as error:
             if isinstance(error, DataCopyFailure) and error.code == 'setup-close-unconfirmed':
+                self.setup_failure = error
                 self.adapter.poisoned = True
             raise
         finally:

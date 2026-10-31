@@ -1,10 +1,181 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from contextlib import closing
+import sqlite3
+from types import SimpleNamespace
 import pytest
 
 from backend.models import TextMatch
-from backend.storage import TranscriptStore
+from backend.storage import TranscriptStore, TranscriptConnectionCloseError, TranscriptStorePoisonedError
+
+
+@pytest.fixture
+def operation_connections(tmp_path, monkeypatch):
+    """Actual SQLite objects observed only by the test; never a product registry."""
+    raw = sqlite3.connect
+    state = SimpleNamespace(opened=[], close_error=None, transaction_errors=[])
+    class Observed(sqlite3.Connection):
+        def __exit__(self, *args):
+            try: return super().__exit__(*args)
+            except BaseException as error:
+                state.transaction_errors.append(error)
+                raise
+        def close(self):
+            self.close_calls += 1
+            if state.close_error is not None: raise state.close_error
+            super().close()
+            self.closed_cleanly = True
+    def connect(*args, **options):
+        connection = raw(*args, factory=Observed, **options)
+        connection.close_calls, connection.closed_cleanly = 0, False
+        state.opened.append(connection)
+        return connection
+    monkeypatch.setattr(sqlite3, 'connect', connect)
+    state.path, state.raw = tmp_path/'owned-transcript.db', raw
+    yield state
+    # Explicit disposal of this test's failed fixtures only, after assertions.
+    for connection in state.opened:
+        if not connection.closed_cleanly: sqlite3.Connection.close(connection)
+
+
+def _owned_match(**updates):
+    return TextMatch(text_id='owned-row', game='zzz', english='Owned caption', chinese='合成记录',
+        source_ocr='合成记录', score=1, kind='exact', source_locale='zh-Hans', source_text='合成记录',
+        texts={'zh-Hans':'合成记录','en':'Owned caption'}, **updates)
+
+
+@pytest.mark.parametrize('operation', ['get','update_audio','set_favorite','update_speaker','delete','prune',
+    'purge_unvoiced','audio_path','list','list_favorites','count','hito','recent','recent-non-chinese'])
+def test_real_operation_connections_close_once_on_reads_writes_and_early_returns(operation_connections, operation):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    match = _owned_match()
+    line = store.add(match, 'owned-session')
+    if operation == 'get': assert store.get(line.id).texts == line.texts
+    elif operation == 'update_audio': store.update_audio(line.id, 'owned-audio-alias.wav', True)
+    elif operation == 'set_favorite': store.set_favorite(line.id, True)
+    elif operation == 'update_speaker': store.update_speaker(line.id, 'Owned speaker', '合成人物')
+    elif operation == 'delete': store.delete(line.id)
+    elif operation == 'prune': store.prune(0)
+    elif operation == 'purge_unvoiced': store.purge_unvoiced()
+    elif operation == 'audio_path': store.audio_path(line.id)
+    elif operation == 'list': assert store.list()[0].chinese == '合成记录'
+    elif operation == 'list_favorites': store.list_favorites()
+    elif operation == 'count': assert store.count() == 1
+    elif operation == 'hito': store.add_or_touch_hito(match.model_copy(update={'game':'hito'}), 'owned-session')
+    elif operation == 'recent': assert store.add_or_upgrade_recent(match, 'owned-session') == (None, False)
+    else:
+        other = match.model_copy(update={'source_locale':'en','source_text':'Owned caption','text_id':'owned-en'})
+        store.add_or_upgrade_recent(other, 'owned-session')
+        assert store.add_or_upgrade_recent(other, 'owned-session') == (None, False)
+    assert not store._connection_failures
+    for connection in state.opened:
+        assert connection.close_calls == 1 and connection.closed_cleanly
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'): connection.execute('SELECT 1')
+
+
+def test_operation_body_exception_rolls_back_and_closes_without_replacing_error(operation_connections):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    line = store.add(_owned_match(), 'owned-session')
+    body = RuntimeError('authored body fault')
+    with pytest.raises(RuntimeError) as raised:
+        with store._connection_scope() as connection:
+            connection.execute('UPDATE transcript_lines SET favorite=1 WHERE id=?', (line.id,))
+            raise body
+    assert raised.value is body
+    assert state.opened[-1].close_calls == 1 and state.opened[-1].closed_cleanly
+    with closing(state.raw(state.path)) as check:
+        assert check.execute('SELECT favorite FROM transcript_lines').fetchone()[0] == 0
+
+
+def test_initialization_sql_failure_closes_its_real_connection(operation_connections, monkeypatch):
+    state = operation_connections
+    with closing(state.raw(state.path)):
+        pass
+    monkeypatch.setattr(TranscriptStore, '_connect', lambda _store:
+        sqlite3.connect(state.path.as_uri()+'?mode=ro', uri=True))
+    with pytest.raises(sqlite3.OperationalError): TranscriptStore(state.path)
+    assert len(state.opened) == 1
+    assert state.opened[0].close_calls == 1 and state.opened[0].closed_cleanly
+
+
+@pytest.mark.parametrize('fault', ['initialize','success','body','transaction-exit','body-and-transaction-exit'])
+def test_failed_close_retains_actual_owner_errors_and_refuses_reopen_without_retry(operation_connections, fault):
+    state = operation_connections
+    close_error, body_error = OSError('authored close fault'), RuntimeError('authored body fault')
+    if fault != 'initialize': store = TranscriptStore(state.path)
+    if fault == 'body-and-transaction-exit':
+        with store._connection_scope() as connection:
+            connection.execute('CREATE TABLE owned_rollback (id INTEGER)')
+    state.close_error = close_error
+    with pytest.raises(TranscriptConnectionCloseError) as raised:
+        if fault == 'initialize': TranscriptStore(state.path)
+        elif fault == 'success': store.count()
+        elif fault in {'body','body-and-transaction-exit'}:
+            with store._connection_scope() as connection:
+                if fault == 'body-and-transaction-exit':
+                    connection.execute('INSERT INTO owned_rollback VALUES (1)')
+                    connection.set_authorizer(lambda action, first, *_:
+                        sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION and first == 'ROLLBACK' else sqlite3.SQLITE_OK)
+                else: connection.execute('SELECT 1')
+                raise body_error
+        else:
+            with store._connection_scope() as connection:
+                connection.execute('PRAGMA foreign_keys=ON')
+                connection.execute('CREATE TABLE owned_parent (id INTEGER PRIMARY KEY)')
+                connection.execute('CREATE TABLE owned_child (id INTEGER REFERENCES owned_parent(id) DEFERRABLE INITIALLY DEFERRED)')
+                connection.execute('INSERT INTO owned_child VALUES (1)')
+    failure = raised.value
+    assert failure.connection is state.opened[-1] and failure.close_error is close_error
+    assert failure.connection.close_calls == 1 and failure.store._connection_failures == [failure]
+    assert failure.body_error is (body_error if fault in {'body','body-and-transaction-exit'} else None)
+    if fault == 'transaction-exit':
+        assert failure.transaction_error is state.transaction_errors[-1]
+        assert isinstance(failure.transaction_error, sqlite3.IntegrityError)
+        assert failure.connection.execute('SELECT COUNT(*) FROM owned_child').fetchone()[0] == 0
+    elif fault == 'body-and-transaction-exit':
+        assert failure.transaction_error is state.transaction_errors[-1]
+        assert isinstance(failure.transaction_error, sqlite3.DatabaseError)
+    else: assert failure.transaction_error is None
+    assert failure.connection.execute('SELECT 1').fetchone()[0] == 1
+    opened = len(state.opened)
+    with pytest.raises(TranscriptStorePoisonedError) as refused: failure.store.count()
+    assert refused.value.failure is failure and len(state.opened) == opened and failure.connection.close_calls == 1
+
+
+def test_repeated_poison_refusals_leave_original_failure_traceback_and_sql_ownership_bounded(operation_connections):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    state.close_error = OSError('authored close fault')
+    with pytest.raises(TranscriptConnectionCloseError) as raised: store.count()
+    failure = raised.value
+    traceback = failure.__traceback__
+    opened = len(state.opened)
+    previous = None
+    for _ in range(100):
+        with pytest.raises(TranscriptStorePoisonedError) as refused: store.count()
+        assert refused.value is not previous and refused.value.failure is failure
+        assert refused.value.__cause__ is failure and failure.__traceback__ is traceback
+        assert str(refused.value) == 'Transcript store cleanup remains unconfirmed.'
+        assert len(state.opened) == opened and failure.connection.close_calls == 1
+        assert store._connection_failures == [failure] and failure.close_error is state.close_error
+        previous = refused.value
+
+
+def test_real_commit_failure_rolls_back_and_closes(operation_connections):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    with pytest.raises(sqlite3.IntegrityError) as raised:
+        with store._connection_scope() as connection:
+            connection.execute('PRAGMA foreign_keys=ON')
+            connection.execute('CREATE TABLE owned_parent (id INTEGER PRIMARY KEY)')
+            connection.execute('CREATE TABLE owned_child (id INTEGER REFERENCES owned_parent(id) DEFERRABLE INITIALLY DEFERRED)')
+            connection.execute('INSERT INTO owned_child VALUES (1)')
+    assert raised.value is state.transaction_errors[-1]
+    assert state.opened[-1].close_calls == 1 and state.opened[-1].closed_cleanly
+    assert not store._connection_failures
 
 
 def test_transcript_round_trip(tmp_path) -> None:

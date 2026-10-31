@@ -61,9 +61,11 @@ production/source paths retain their existing behavior.
    Acquire coordinator exclusion, save the initial fixture pointer bytes and
    seed two rows through actual `TranscriptStore.add` and `TextMatch`.
 2. Explicitly close every setup SQLite connection, including the constructor's
-   initialization connection. The setup-only tracking subclass changes no
-   production SQL or storage behavior. No parent source DB connection remains
-   while a child writes or while the copy runs.
+   initialization connection. Production operation scopes now own transaction
+   completion and one explicit close; the earlier setup-only tracking subclass
+   has been removed. No parent source DB connection remains while a child writes
+   or while the copy runs. Unknown close retains its actual failed owner and
+   enters the existing living-owner hold, without a second close attempt.
 3. Register both real frozen writers suspended, detached and in their Job before
    resume. Await readiness tied to their actual retained creation objects and
    listeners; send the real favorite PATCH through the same identity scope.
@@ -322,8 +324,10 @@ only through a strict default-false private boolean. Its frontend/API roles,
 two creation objects per cohort, detached Job admission, listener identity,
 retained signaling and ordinary C1/default API behavior are unchanged. The
 synthetic marker remains the exact existing build-bound dictionary; it has no
-WAL option, root grant or ownership flag. No production API/storage code,
-source updater, copy helper, common Win32 primitive or runtime spec changes.
+WAL option, root grant or ownership flag. The original C5 slice changed no
+production API/storage code, source updater, copy helper, common Win32 primitive
+or runtime spec. The separate transcript lifetime change below keeps this fixed
+WAL policy intact.
 
 Before service import, this isolated API probe temporarily wraps
 `sqlite3.connect` for exactly its newly owned transcript, exports and reading
@@ -349,11 +353,12 @@ strict numeric three-part SQLite version is observed in the frozen coordinator,
 not asserted as a separately queried API-child version. The build/source and
 existing supplier/inventory/native-image evidence must bind the exact output.
 
-Successful connections are not retained by the policy. The production stores'
-normal lifetimes remain intact: exports uses explicit finally-close and
-reading uses `closing`; transcript transaction contexts commit/roll back but
-do not explicitly close. Thus the C2 acknowledgment is not a connection-close
-proof. Parent setup connections still close explicitly, and every copy barrier
+Successful connections are not retained by the policy. At the verified
+`a1c5e92` checkpoint, exports used explicit finally-close and reading used
+`closing`; transcript contexts committed/rolled back without explicit close.
+The later source prerequisite below closes each transcript operation explicitly.
+Neither implementation makes the C2 acknowledgment alone a connection-close
+proof. Parent setup connections close explicitly, and every copy barrier
 still follows the actual strict protocol/status503/health checks **and** the
 exact retained writer-process signals. The current normal host stop uses
 retained-handle termination followed by signal confirmation; this case claims
@@ -618,3 +623,32 @@ mapping, target activation, global/dynamic writer admission, keeper loss, warm
 routing, rights or ordinary-user Windows 11 acceptance. Those gates remain
 open; the [checkpoint ledger](r19-frozen-checkpoint-20261031.json) preserves
 exact identities and earlier failures, and `r19_complete` remains false.
+
+## Deterministic transcript lifetime prerequisite
+
+The source store now closes the actual connection after each of its sixteen
+transaction scopes, including initialization, early return, rollback and commit
+failure. SQLite still owns the transaction outcome. The raw `_connect` factory
+contract and C5 configuration policy are unchanged. Setup and offline OCR replay
+use the same production scope; neither adds a second close or retains successful
+connections as purported ownership evidence.
+
+An unconfirmed close retains the actual connection, store and original body,
+transaction and close exceptions privately. That store refuses later operations
+before opening another connection, without retrying the failed close. Each later
+refusal has a fresh fixed wrapper referring to the original failure, so repeated
+refusals cannot grow the retained failure's traceback. The copy probe retains
+the exact setup failure and poisons its living adapter before recovery handling.
+
+Actual authored SQLite operations on the local development build close before
+return or error. With the unchanged NO_CKPT_ON_CLOSE policy, three real operation
+connections all close while a real WAL/SHM set still distinguishes main-only
+favorite0 from full-set favorite1. This is local source evidence, not a new
+Windows supplier result; the frozen SQLite variant requires its own exact-source
+C3/C4/C5/C6 attempt. Earlier downloaded receipts retain their original meaning.
+
+This change adds no data-admission fence, active-operation drain, detach/reopen
+API, cache/settings rebinding or owner transition. It does not establish that a
+living candidate can replace its data while preserving a usable OCR session.
+Whole-cohort retained signaling, global writers, keeper loss, warm routing,
+rights and ordinary-user Windows 11 gates remain open.

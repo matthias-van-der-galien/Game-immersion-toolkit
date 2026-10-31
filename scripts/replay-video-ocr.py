@@ -9,7 +9,6 @@ confirmation, freshness, deduplication and transcript storage are production.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -98,16 +97,7 @@ def validate_result(clip, emitted, scheduled, mapped, fps=2, coverage=None):
 
 
 class ReplayStore(TranscriptStore):
-    @contextmanager
-    def _connect(self):
-        # Explicitly close each temporary SQLite handle on Windows. Production
-        # persistence and transaction behavior remain in TranscriptStore.
-        connection = super()._connect()
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+    """Replay uses the production transaction and deterministic close scope."""
 
 
 def replay(clip, resolution, data_dir, fps=2, catalog_bindings_only=False):
