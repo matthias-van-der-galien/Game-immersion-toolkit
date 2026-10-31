@@ -154,6 +154,41 @@ temporary-tree cleanup. A failed receipt never upgrades partial observations.
 The authored case roots are children of the harness-selected `empty-host` TEMP;
 the frozen containment guard still rejects sibling roots outside that TEMP.
 
+## 31ee registered-start refusal and source startup correction
+
+Run `41230110931` at `31ee4c9d14594b34ef8bfbfbe583543f6261c296`
+passed 1,191 Windows contracts without skips, then failed during
+`keeper-after-ready` at `registered-start` with
+`registered-listener-changed`. The separate before-resume case passed. Cleanup
+remained `unconfirmed-recovery-required`; the external five-minute deadline
+ended that recovery hold. This run supplies no C3–C6 pass or keeper-loss
+containment result. Its native cause remains unknown.
+
+An independent source reproduction using the existing retained-creation/Job
+doubles demonstrated a matching producer bug: an incomplete listener snapshot
+yielded false without any HTTP request, but the appearance of the correct owned
+listeners before scope exit was rejected as a changed authoritative snapshot.
+Both empty→complete and frontend-only→complete transitions reproduced the error.
+This source result does not establish which transition occurred in the native
+run, or any causal connection to storage changes.
+
+The fixed registered startup path now performs a separate observation-only
+preflight. Every currently observed listener is validated against its genuine
+retained creation object, expected port role and Job; the live cohort/member
+checks and exactly-once observer-close attempt remain required. An incomplete
+but valid observation returns false, grants no HTTP/scoped authority, and may
+progress on the next bounded readiness iteration. Native query, foreign/member,
+role, exit and observer-close failures require immediate recovery, outside the
+HTTP transport retry handler.
+
+Once both canonical ports are complete, readiness enters the existing stable
+listener scope unchanged. Its own fresh snapshot, exact before/after equality,
+retained-object checks and HTTP acceptance rules still apply. No change-tolerance
+flag, PID authority, listener adoption or nonregistered-path change is added.
+Local source regressions cover normal progress, immediate partial-state refusal
+and changed full-scope HTTP identity. A new exact frozen Windows run and verified
+receipt remain necessary; no native success or broader gate follows this fix.
+
 ## Hosted invocation and remaining gates
 
 After extracting and independently verifying the exact candidate, run on

@@ -370,6 +370,96 @@ def test_registered_http_result_cannot_outlive_listener_identity(registered, mon
     assert host.recovery_required
 
 
+def test_registered_startup_missing_then_owned_listeners_reach_http_only_inside_complete_stable_scope(registered, monkeypatch):
+    host, _, _ = registered
+    host.start_registered(); host.resume_registered()
+    full = {3000: {101}, 8766: {102}}
+    sequence = iter([{}, {3000: {101}}, full, full, full])
+    observations, http, scopes = [], [], []
+    def listeners():
+        value = next(sequence, full); observations.append(value); return value
+    monkeypatch.setattr(runtime_host, 'listener_processes', listeners)
+    original = host._registered_listener_scope
+    from contextlib import contextmanager
+    @contextmanager
+    def scoped():
+        scopes.append(True)
+        with original() as ready:
+            assert ready
+            yield ready
+    monkeypatch.setattr(host, '_registered_listener_scope', scoped)
+    def api(*_args):
+        assert scopes == [True] and len(observations) == 4 and observations[-1] == full
+        http.append('api'); return {'ready': True}
+    class Response:
+        status = 200
+        def __enter__(self):
+            assert scopes == [True] and len(observations) == 4
+            http.append('frontend'); return self
+        def __exit__(self, *_): pass
+        def read(self, _): return b'x'
+    monkeypatch.setattr(host, '_json', api)
+    monkeypatch.setattr(runtime_host, 'urlopen', lambda *_a, **_k: Response())
+    host.wait_services(timeout=1)
+    assert observations == [{}, {3000: {101}}, full, full, full]
+    assert http == ['api', 'frontend'] and not host.recovery_required
+    host.close()
+
+
+@pytest.mark.parametrize('fault', ['foreign', 'wrong-role', 'exit', 'close-refused', 'close-raised', 'member', 'query'])
+def test_registered_startup_partial_native_refusals_never_become_http_retries(registered, monkeypatch, fault):
+    host, calls, members = registered
+    host.start_registered(); host.resume_registered()
+    tree = host.tree
+    calls.clear()
+    close_attempts, queries = [], []
+    partial = {3000: {999 if fault == 'foreign' else 102 if fault == 'wrong-role' else 101}}
+    error = OSError('authored native refusal')
+    def listeners():
+        queries.append(True)
+        if fault == 'query': raise error
+        return partial
+    monkeypatch.setattr(runtime_host, 'listener_processes', listeners)
+    monkeypatch.setattr(host, '_json', lambda *_: pytest.fail('Unconfirmed startup cannot consult HTTP'))
+    monkeypatch.setattr(runtime_host, 'urlopen', lambda *_a, **_k: pytest.fail('Unconfirmed startup cannot consult HTTP'))
+    if fault == 'exit':
+        monkeypatch.setattr(tree.kernel, 'WaitForSingleObject', lambda handle, _: 0 if handle == 102 else 258)
+    elif fault.startswith('close-'):
+        def close(handle):
+            close_attempts.append(handle)
+            if fault == 'close-raised': raise error
+            return False
+        monkeypatch.setattr(tree.kernel, 'CloseHandle', close)
+    elif fault == 'member': members.add(999)
+    expected = OSError if fault in {'close-raised','query'} else runtime_host.HostProbeFailure
+    with pytest.raises(expected) as raised: host.wait_services(timeout=1)
+    if expected is OSError: assert raised.value is error
+    assert host.recovery_required and host.tree is tree and not host.closed and host.scratch.exists()
+    assert len(queries) <= 1
+    if fault.startswith('close-'): assert len(close_attempts) == 1
+    assert not any(isinstance(call, tuple) and call[0] == 'stop' for call in calls)
+
+
+def test_registered_complete_startup_still_rejects_changed_scoped_http_listeners(registered, monkeypatch):
+    host, _, _ = registered
+    host.start_registered(); host.resume_registered()
+    full = {3000: {101}, 8766: {102}}
+    sequence = iter([full, full, {3000: {999}, 8766: {102}}])
+    monkeypatch.setattr(runtime_host, 'listener_processes', lambda: next(sequence))
+    http = []
+    def api(*_): http.append('api'); return {'ready': True}
+    monkeypatch.setattr(host, '_json', api)
+    class Response:
+        status = 200
+        def __enter__(self): http.append('frontend'); return self
+        def __exit__(self, *_): pass
+        def read(self, _): return b'x'
+    monkeypatch.setattr(runtime_host, 'urlopen', lambda *_a, **_k: Response())
+    with pytest.raises(runtime_host.HostProbeFailure, match='registered-listener-changed'):
+        host.wait_services(timeout=1)
+    assert http == ['api','frontend'] and host.recovery_required and not host.closed
+
+
 @pytest.mark.parametrize('boundary', ['partial-create', 'resume', 'stop', 'job-close', 'observer-close'])
 def test_registered_failures_retain_owner_and_never_report_closed(registered, monkeypatch, boundary):
     host, calls, _ = registered

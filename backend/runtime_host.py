@@ -420,6 +420,32 @@ class FrozenProbeHost:
             if status != 503 or self._json('/api/health', 3).get('status') != 'ok':
                 self._recovery('registered-writer-drain-unconfirmed')
 
+    def _registered_startup_complete(self):
+        """Validate observed startup listeners; never grant scoped HTTP authority."""
+        try:
+            self._alive()
+            self.check_registered_members()
+            owners, kernel = listener_processes(), self.tree.kernel
+            with self.tree._lifecycle:
+                for port, members in owners.items():
+                    for pid in members:
+                        observer = kernel.OpenProcess(0x101000, False, pid)
+                        if not observer:
+                            self._recovery('registered-listener-unavailable')
+                        try:
+                            role = self._registered_role(observer)
+                            if role != {3000: 'frontend', 8766: 'api'}.get(port):
+                                self._recovery('registered-listener-role-mismatch')
+                        finally:
+                            if not kernel.CloseHandle(observer):
+                                self._recovery('registered-observer-close-unconfirmed')
+                self._alive()
+                self.check_registered_members()
+            return set(owners) == {3000, 8766} and all(len(ids) == 1 for ids in owners.values())
+        except BaseException:
+            self.recovery_required = True
+            raise
+
     @contextmanager
     def _registered_listener_scope(self):
         self.check_registered_members()
@@ -498,6 +524,11 @@ class FrozenProbeHost:
         while time.monotonic() < deadline:
             self._alive()
             remaining = min(.5, max(.001, deadline-time.monotonic()))
+            # Missing owned listeners during startup are observation-only.
+            # Native/identity/cleanup failures must escape the HTTP retry catch.
+            if self.registered_mode and not self._registered_startup_complete():
+                time.sleep(min(.05, max(0, deadline-time.monotonic())))
+                continue
             try:
                 with self._listener_scope() as owned:
                     if owned:
