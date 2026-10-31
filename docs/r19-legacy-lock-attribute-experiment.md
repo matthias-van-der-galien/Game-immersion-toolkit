@@ -91,14 +91,14 @@ ChangeTime changes can be observed as false. They are not hidden or presented
 as exact timestamp preservation. No private path, file ID, raw time, private
 content hash, exception, environment, command or stack is serialized.
 
-The public schema is `proxy-r19-legacy-lock-attribute-mechanism-v2`, scope
+The public schema is `proxy-r19-legacy-lock-attribute-mechanism-v3`, scope
 `authored-local-ntfs-no-writers-mechanism`. It revalidates exact keys, fixed
 ordered observations, enum values, booleans and the known public legacy-source
 hash. Its only successful status is `mechanism-observed`. The final gates stay
 false: production, keeper-loss acceptance, rights and R19 completion; ordinary
 Windows 11 acceptance stays unavailable.
 
-Version2 adds exactly one closed `baseline_checkpoint` object with three finite
+Version 2 introduced the closed `baseline_checkpoint` object with three finite
 strings: `parent_step`, `script_step` and `child_state`. The parent marks pipe
 creation, owned process creation/resume, client binding, grant send, progress
 receive, result receive and cleanup immediately before the action. On refusal,
@@ -108,8 +108,15 @@ retained creation handle before close. No closed handle, PID lookup or exit code
 supplies it. Query failure is unavailable context; it cannot grant or revoke
 the existing process cleanup or mechanism acceptance requirements.
 
-The same PowerShell child sends fixed ordered progress: connected,
-grantvalidated, sourceopened, hashbound, definitionbound and operationentered.
+Version 3 retains those exact three keys. The same PowerShell child now sends
+fixed ordered progress: connected, grantread, grantparsed, grantvalidated,
+sourceopened, hashbound, definitionbound and operationentered. The existing
+single ReadLine call returns before grantread; its result enters the same
+string pipeline to ConvertFrom-Json, which returns before grantparsed.
+Neither acknowledgement proves a non-null grant, its shape, or a successful
+operation. Only the unchanged three-name/string-type checks permit
+grantvalidated. Null, malformed or incomplete progress still refuses; no
+line, property, parser output or exception is published.
 Only actual hash equality permits hashbound; only the exact AST checks and
 definition permit definitionbound. The terminal `state` result is unchanged.
 Only a complete typed terminal record supplies operationresult. A stage before
@@ -147,6 +154,23 @@ was delivered. The phase conflated startup, pipe binding and the script's source
 and operation steps; it established no native cause. It contains no version2
 checkpoint. The new wire and projection need their own reviewed CI publisher
 and actual exact-source Windows attempt; the old negative is not relabeled.
+
+The historical version 2 attempt at `e8416e9`,
+[run41229013616](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41229013616),
+passed 89 authored Windows contracts without skips on image `20261021.278.1`.
+Its independently verified receipt stopped at legacy-baseline/protocol-refused:
+parent receive-script-progress, script connected and child not-signaled before
+close. Observations and timestamp equalities were empty; cleanup remained
+unconfirmed-fixture-retained. It does not identify whether ReadLine, conversion
+or shape validation returned, and establishes no successful legacy Open,
+READONLY transition, owner loss or native cause.
+
+Version 3 distinguishes only those existing grant boundaries, with no additional
+read, conversion, parser/runtime import or acceptance authority. Its wire needs
+the separately reviewed publisher and a new exact-source Windows receipt;
+native execution remains pending. The v1/v2 negatives retain their original
+schemas and meaning. No environment, timeout, source-function or pipe repair is
+inferred from them.
 
 On the selected Windows build host, run the selected 64-bit source
 interpreter directly:

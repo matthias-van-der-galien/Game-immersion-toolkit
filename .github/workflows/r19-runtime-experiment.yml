@@ -202,7 +202,7 @@ jobs:
             const after = captureSourceSnapshot();
             if (after.sourceStatus !== 'available' || before.head !== after.head || before.sourceHash !== after.sourceHash || !clean() || child.error || child.signal || ![0,2].includes(child.status)) refuse();
             let value; try {value=JSON.parse(child.stdout);} catch {refuse();}
-            const fixed={schema:'proxy-r19-legacy-lock-attribute-mechanism-v2',scope:'authored-local-ntfs-no-writers-mechanism',candidate_data_writers:0,production_allowed:false,keeper_loss_acceptance:false,rights_approval:false,native_windows_11_acceptance:'unavailable',r19_complete:false};
+            const fixed={schema:'proxy-r19-legacy-lock-attribute-mechanism-v3',scope:'authored-local-ntfs-no-writers-mechanism',candidate_data_writers:0,production_allowed:false,keeper_loss_acceptance:false,rights_approval:false,native_windows_11_acceptance:'unavailable',r19_complete:false};
             const keys=[...Object.keys(fixed),'status','phase','failure','legacy_source_sha256','observed','timestamp_equalities','cleanup','baseline_checkpoint'].sort();
             if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(keys)) refuse();
             for (const [key,expected] of Object.entries(fixed)) if (value[key] !== expected) refuse();
@@ -218,7 +218,7 @@ jobs:
             if (!equalities || typeof equalities !== 'object' || Array.isArray(equalities) || Object.keys(equalities).some(key=>!times.includes(key))) refuse();
             for (const item of Object.values(equalities)) if (!item || typeof item !== 'object' || Array.isArray(item) || JSON.stringify(Object.keys(item).sort()) !== JSON.stringify(fields) || Object.values(item).some(v=>typeof v !== 'boolean')) refuse();
             const checkpoint=value.baseline_checkpoint;
-            const checkpointValues={parent_step:['not-started','create-pipe','create-owned-process','resume-owned-process','bind-client','send-grant','receive-script-progress','receive-result','cleanup'],script_step:['not-started','connected','grantvalidated','sourceopened','hashbound','definitionbound','operationentered','operationresult'],child_state:['not-created','signaled','not-signaled','unavailable']};
+            const checkpointValues={parent_step:['not-started','create-pipe','create-owned-process','resume-owned-process','bind-client','send-grant','receive-script-progress','receive-result','cleanup'],script_step:['not-started','connected','grantread','grantparsed','grantvalidated','sourceopened','hashbound','definitionbound','operationentered','operationresult'],child_state:['not-created','signaled','not-signaled','unavailable']};
             if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint) || JSON.stringify(Object.keys(checkpoint).sort()) !== JSON.stringify(Object.keys(checkpointValues).sort())) refuse();
             for (const [key,allowed] of Object.entries(checkpointValues)) if (typeof checkpoint[key] !== 'string' || !allowed.includes(checkpoint[key])) refuse();
             const passed=value.status === 'mechanism-observed';

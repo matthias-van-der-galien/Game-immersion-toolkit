@@ -347,17 +347,49 @@ def test_complete_progress_keeps_terminal_result_and_one_exchange_deadline(monke
 def test_progress_rejects_bad_order_and_keeps_only_the_last_complete_checkpoint(mutation):
     attempt = progress_attempt()
     frames = attempt.pipe.frames
-    if mutation == 'duplicate': frames[2] = dict(frames[1])
-    if mutation == 'skip': frames.pop(2)
-    if mutation == 'unknown': frames[2] = {'kind': 'checkpoint', 'stage': 'private-unknown-stage'}
-    if mutation == 'private-key': frames[2]['raw'] = 'private-path'
-    if mutation == 'wrong-order': frames[2], frames[3] = frames[3], frames[2]
-    if mutation == 'early-result': frames[2] = {'state': 'open'}
-    if mutation == 'truncated': frames[2] = module.Refused('protocol-refused')
+    boundary = next(i for i, frame in enumerate(frames) if frame.get('stage') == 'sourceopened')
+    if mutation == 'duplicate': frames[boundary] = dict(frames[boundary-1])
+    if mutation == 'skip': frames.pop(boundary)
+    if mutation == 'unknown': frames[boundary] = {'kind': 'checkpoint', 'stage': 'private-unknown-stage'}
+    if mutation == 'private-key': frames[boundary]['raw'] = 'private-path'
+    if mutation == 'wrong-order': frames[boundary], frames[boundary+1] = frames[boundary+1], frames[boundary]
+    if mutation == 'early-result': frames[boundary] = {'state': 'open'}
+    if mutation == 'truncated': frames[boundary] = module.Refused('protocol-refused')
     if mutation == 'unknown-result': frames[-1] = {'state': 'private-unknown-result'}
     with pytest.raises(module.Refused): attempt.script_exchange({})
     assert attempt.checkpoint['script_step'] == ('operationentered' if mutation == 'unknown-result' else 'grantvalidated')
     assert attempt.checkpoint_locked and 'private-' not in json.dumps(attempt.checkpoint)
+
+
+@pytest.mark.parametrize(('stages', 'tail', 'last'), [
+    (['connected'], [], 'connected'),
+    (['connected', 'grantread'], [], 'grantread'),
+    (['connected', 'grantread', 'grantparsed'], [], 'grantparsed'),
+    (['connected', 'grantparsed'], [], 'connected'),
+    (['connected', 'grantread', 'grantread'], [], 'grantread'),
+    (['connected', 'grantread', 'grantvalidated'], [], 'grantread'),
+    (['connected', 'grantread'], [None], 'grantread'),
+    (['connected', 'grantread'], [{'kind': 'checkpoint', 'stage': 'grantparsed', 'raw': 'private-grant'}], 'grantread'),
+    (['connected', 'grantread', 'grantparsed'], [None], 'grantparsed'),
+    (['connected', 'grantread', 'grantparsed'], [{'kind': 'checkpoint', 'stage': 'grantvalidated', 'raw': 'private-grant'}], 'grantparsed'),
+])
+def test_grant_return_checkpoints_never_imply_shape_validation_or_operation(stages, tail, last):
+    attempt = progress_attempt([*({'kind': 'checkpoint', 'stage': name} for name in stages), *tail])
+    with pytest.raises(module.Refused): attempt.script_exchange({'owned': 'grant'})
+    assert attempt.checkpoint == {'parent_step': 'receive-script-progress',
+        'script_step': last, 'child_state': 'not-created'}
+    assert attempt.checkpoint_locked
+    value = module.receipt(); value['baseline_checkpoint'] = attempt.checkpoint
+    public = module.public_receipt(value)
+    assert public['status'] == 'failed' and public['observed'] == []
+    assert public['baseline_checkpoint']['script_step'] == last
+    assert 'private-grant' not in json.dumps(public)
+
+
+def test_changed_wire_does_not_relabel_historical_v2_receipts():
+    value = module.receipt()
+    value['schema'] = 'proxy-r19-legacy-lock-attribute-mechanism-v2'
+    with pytest.raises(module.Refused): module.public_receipt(value)
 
 
 def test_valid_terminal_cannot_hide_trailing_records_or_become_open_evidence():
@@ -378,7 +410,7 @@ def test_progress_deadline_is_not_extended_by_each_short_record(monkeypatch):
         return receive(deadline)
     attempt.pipe.receive = slow
     with pytest.raises(module.Refused): attempt.script_exchange({})
-    assert attempt.checkpoint['script_step'] == 'sourceopened' and clock[0] == 12.
+    assert attempt.checkpoint['script_step'] == 'grantparsed' and clock[0] == 12.
     assert set(attempt.pipe.deadlines) == {10.}
 
 

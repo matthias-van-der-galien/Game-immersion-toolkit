@@ -20,7 +20,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = 'proxy-r19-legacy-lock-attribute-mechanism-v2'
+SCHEMA = 'proxy-r19-legacy-lock-attribute-mechanism-v3'
 CONTENT = b'owned R19 legacy lock attribute fixture\n'
 MARKER = '.r19-lock-attribute-fixture.json'
 SOURCE = ROOT / 'scripts/companion-runtime.ps1'
@@ -43,8 +43,8 @@ TIME_STATES = ('arm', 'live-clear', 'rearm', 'post-loss', 'test-restore', 'resto
 _UNCONFIRMED = []  # Private ownership records only; never an adoption/retry list.
 PARENT_STEPS = ('not-started', 'create-pipe', 'create-owned-process', 'resume-owned-process',
     'bind-client', 'send-grant', 'receive-script-progress', 'receive-result', 'cleanup')
-SCRIPT_STEPS = ('not-started', 'connected', 'grantvalidated', 'sourceopened', 'hashbound',
-    'definitionbound', 'operationentered', 'operationresult')
+SCRIPT_STEPS = ('not-started', 'connected', 'grantread', 'grantparsed', 'grantvalidated',
+    'sourceopened', 'hashbound', 'definitionbound', 'operationentered', 'operationresult')
 CHILD_STATES = ('not-created', 'signaled', 'not-signaled', 'unavailable')
 
 
@@ -449,7 +449,10 @@ try {
         $writer.WriteLine('{"kind":"checkpoint","stage":"'+$Stage+'"}')
     }
     Write-C7Checkpoint 'connected'
-    $grant=$reader.ReadLine()|ConvertFrom-Json
+    $line=$reader.ReadLine()
+    Write-C7Checkpoint 'grantread'
+    $grant=$line|ConvertFrom-Json
+    Write-C7Checkpoint 'grantparsed'
     $names=@($grant.PSObject.Properties.Name)
     if ($names.Count -ne 3 -or $names -cnotcontains 'root' -or $names -cnotcontains 'sha256' -or $names -cnotcontains 'source' -or
         $grant.root -isnot [string] -or $grant.source -isnot [string] -or $grant.sha256 -isnot [string]) { throw 'Grant differs.' }
