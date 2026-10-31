@@ -2739,5 +2739,211 @@
     "native_windows_11_acceptance": "unavailable",
     "r19_complete": false,
     "installer": "not-built"
+  },
+  "verified_living_owner_retained_wal_fbcb943": {
+    "head": "fbcb943dd05ea2b60fe40a15277b1143fa849aa0",
+    "run": 41219911357,
+    "job": 124592165231,
+    "attempt": 1,
+    "workflow": "success",
+    "image_version": "20261030.294.1",
+    "contracts_passed": 1090,
+    "contracts_skipped": 0,
+    "metadata_artifact": {
+      "id": 13049473823,
+      "bytes": 1336433,
+      "sha256": "07560fe4447b99c8521543e48d10b1f0829339a79da2fa64f92177e9999c0bd3",
+      "entries": 12
+    },
+    "source_rebuild_artifact": {
+      "id": 13049298477,
+      "bytes": 1095191,
+      "sha256": "6c51170e8f5948fa97ce728aa0b27dcbd2b24767ce84de332fbcaabc9896b95c"
+    },
+    "independent_download_review": "root-and-peer-verified",
+    "inventory": {
+      "files": 1449,
+      "directories": 642,
+      "total_bytes": 620104421,
+      "bytes": 661687,
+      "sha256": "51af9700e2cbfceaa5df55e7bc2894941c68e295d0f7ef609e20fc8c01cbb318"
+    },
+    "native_a2_p1_records": 473,
+    "a2_input_sha256": "e718328331d057e9de4c9282d5879da6a1ba420649ba34f8c219ca4f453992c9",
+    "components": 57,
+    "notice_occurrences": 113,
+    "distinct_notice_hashes": 104,
+    "all_notice_hashes_in_inventory": true,
+    "main_executable_sha256": "c6a4d05efb426d10ee86d132e096c93bf694ba8c18fdda8ba62a9ffb8e4a86fd",
+    "asr_executable_sha256": "5d42db35e1345f8f0c58e209d78f050493fc9f68c2fe3284e7e7997c1fa6cd3a",
+    "xiph_source_kit_sha256": "7dd55f62a9c558bf1065ec89b873f9f17dc6c542e806bf44e157475c870ab7b9",
+    "identical_rebuilt_outputs": 9,
+    "reference_tools": {
+      "cmake": "4.4.5",
+      "compiler": "19.51.36260.0"
+    },
+    "c1_cases": 5,
+    "cold_slot_source_blocks": 29,
+    "keeper_source_blocks": 4,
+    "plain_copy_source_blocks": 9,
+    "interrupted_copy_source_blocks": 10,
+    "c3_c4_wal_and_shm_files": 0,
+    "retained_wal_copy": {
+      "schema": "proxy-r19-frozen-data-copy-wal-receipt-v1",
+      "status": "passed",
+      "source_commit": "fbcb943dd05ea2b60fe40a15277b1143fa849aa0",
+      "build_id": "runtime-experiment-41219911357-1",
+      "case": "authored-data-copy-wal",
+      "scope": "authored-transcript-retained-wal-copy-with-living-coordinator",
+      "legacy_source_sha256": "f9469ccb51c99b814a615e66eb9b337e8b1ba8598a0fd794dbe420c8be4c8e9e",
+      "legacy_source_operation": "existing-enter-operation",
+      "source_operation_blocked_observations": 10,
+      "authority": "retained-creation-objects-and-typed-barrier",
+      "writer_console_mode": "detached-process",
+      "api_external_side_effects": "mocked",
+      "sqlite": "real",
+      "database_schema_pins": [
+        0,
+        0,
+        0
+      ],
+      "authored_transcript_rows": 2,
+      "source_cohorts": 2,
+      "retained_writer_signals": 4,
+      "copy_verification": "passed",
+      "source_bytes": "preserved-before-resume",
+      "source_logical": "passed-after-fresh-source-cohort",
+      "pointer": "baseline-unchanged",
+      "old_barrier": "refused-after-new-generation",
+      "wal_files": 2,
+      "shm_files": 2,
+      "strict_writer_runtime_budget_ms": 30000,
+      "http_transport_timeout_ms": 35000,
+      "cleanup": "retained-writers-signaled-leases-released-private-tree-removed",
+      "failure_stage": "none",
+      "failure_category": "none",
+      "keeper_loss": "unavailable",
+      "dynamic_writer_admission": "unavailable",
+      "warm_routing": "unavailable",
+      "credentials": "not-accessed",
+      "browser": "not-run",
+      "target_activation": false,
+      "production_activation": false,
+      "installer": "not-built",
+      "r19_complete": false,
+      "copy_model": "one-plain-copy-without-injected-interruption",
+      "sqlite_policy": "no-checkpoint-on-close-per-open-readback",
+      "sqlite_version": "3.53.1",
+      "sqlite_version_scope": "frozen-coordinator",
+      "transcript_wal_bytes": 16512,
+      "transcript_shm_bytes": 32768,
+      "wal_set": "nonempty-after-retained-signals",
+      "wal_dependency": "main-only-false-full-set-true"
+    },
+    "sqlite_supplier_inputs": [
+      {
+        "path": "_internal/_sqlite3.pyd",
+        "bytes": 112128,
+        "sha256": "d192b0d3acaf0da667f1c8e9a01dc75e0889b5ba0580321df0b7f7c5e928af0a"
+      },
+      {
+        "path": "_internal/sqlite3.dll",
+        "bytes": 1607680,
+        "sha256": "fc119cc8bf851b5e0e53532a564547807fc39db23e87c66fdd9246b51ea33d97"
+      }
+    ],
+    "auxiliary_same_head_review": "five exact metadata artifacts; protected TEST, diagnostic/static frontend and authored helper scope only",
+    "scope_limits": [
+      "authored stores only; schema pins zero",
+      "two authored transcript rows",
+      "C3/C4 observed zero WAL/SHM; separate C5 retained real WAL",
+      "living keeper only; keeper loss unavailable",
+      "dynamic writer admission and warm routing unavailable",
+      "no production migration or native Windows11 approval",
+      "no interrupted-WAL observation",
+      "no full populated-data or settings continuity proof"
+    ],
+    "production_execution_allowed": false,
+    "runtime_collection_allowed": false,
+    "source_delivery_approved": false,
+    "rights_review": "pending-exact-output",
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built",
+    "source_verification_limit": "named immutable pins/notices checked against exact Git head; no dirty C6 runtime or global local fingerprint claim"
+  },
+  "asr_dnv_marker_not_delivered_fbcb943": {
+    "head": "fbcb943dd05ea2b60fe40a15277b1143fa849aa0",
+    "run": 41219931905,
+    "job": 124592233461,
+    "attempt": 1,
+    "workflow": "failure",
+    "phase": "common-data-bound",
+    "image_version": "20261030.294.1",
+    "selected_vs_version": "18.11.12328.437",
+    "artifact": {
+      "id": 13049308851,
+      "bytes": 1996,
+      "sha256": "dcbac58e0b3ea38ce465ecaf4476aa90c09cd8347865b7ae7d38f04fa1058156",
+      "entries": [
+        "ASR-FAILURE.json"
+      ]
+    },
+    "failure_json": {
+      "bytes": 5071,
+      "sha256": "116c0f420c57445e652d6422fe2039015d3cf4676443e30553ba47231a5e5c27"
+    },
+    "common_data": {
+      "baseline": {
+        "allusersprofile_equal": true,
+        "do_not_verify": {
+          "allusersprofile_equal": null,
+          "empty": null,
+          "programdata_equal": null,
+          "rooted": null
+        },
+        "folder": "empty",
+        "programdata_equal": true,
+        "reason": "process-rejected",
+        "root": "not-run",
+        "rooted": null,
+        "runtime": "full",
+        "status": "rejected",
+        "x64": true
+      },
+      "binding": "PROGRAMDATA+ALLUSERSPROFILE",
+      "bound": {
+        "allusersprofile_equal": false,
+        "do_not_verify": {
+          "allusersprofile_equal": null,
+          "empty": null,
+          "programdata_equal": null,
+          "rooted": null
+        },
+        "folder": "empty",
+        "programdata_equal": false,
+        "reason": "process-rejected",
+        "root": "not-run",
+        "rooted": null,
+        "runtime": "full",
+        "status": "rejected",
+        "x64": true
+      },
+      "origin": "FOLDERID_ProgramData",
+      "origin_stable": "verified"
+    },
+    "disposition": "both default folders empty; all four DoNotVerify fields unobserved in each state",
+    "native_cause": "unknown; call and later marker-expression evaluation not distinguished",
+    "initial_cmake_variant_verified": true,
+    "configure_compile_probes": "not-reached",
+    "final_native_tool_seals_and_cohort": "not-delivered",
+    "independent_download_review": "root-and-peer-verified",
+    "production_execution_allowed": false,
+    "runtime_collection_allowed": false,
+    "source_delivery_approved": false,
+    "rights_approval": false,
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built"
   }
 }

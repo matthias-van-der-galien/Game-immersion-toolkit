@@ -1021,6 +1021,17 @@ negative result grants no runtime or rights acceptance. Main image
 Windows 11, keeper-death, global admission and warm-routing gates remain open.
 The [checkpoint ledger](r19-frozen-checkpoint-20261031.json) retains exact bytes.
 
+The subsequent `fbcb943dd05ea2b60fe40a15277b1143fa849aa0` checkpoint,
+run `41219911357`, passed the same 1,090 Windows contracts and all selected
+runtime/C3/C4/C5 observations. Root and peer verified all seven metadata/source
+archives and the same inventory/A2/P1/notice/source-rebuild bindings. Its actual
+main/reference image was `20261030.294.1`; reference CMake was `4.4.5`.
+The separate ASR run `41219931905` again failed before configure. Both default
+folders were empty, but all four new DoNotVerify fields were null: no complete
+contrast marker was delivered. Null is not an empty-folder observation, and
+the failure does not distinguish that call from its marker-expression evaluation.
+All existing rights, native, host and activation limits remain.
+
 ## Continuation and rollback
 
 Use the integrated workflow for the extracted runtime/native/ASR observations,

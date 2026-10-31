@@ -180,6 +180,18 @@ remain necessary. No unverified string, length, digest or unknown field is
 published. A fresh reviewed15-input prepare and Windows attempt are still
 required to establish that additional observation.
 
+At `fbcb943`, [run41219931905](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41219931905)
+failed in `common-data-bound` on its first attempt. Root and peer verified the
+sole 1,996-byte artifact and 5,071-byte failure JSON, initial CMake variant and
+Windows-CRLF manifest. Both Full CLR/x64 default results were empty; all four
+DoNotVerify fields were null in both states, with `process-rejected` and no
+root result. Thus no complete contrast marker was delivered. Do not interpret
+null as an empty/unrooted contrast result or infer whether GetFolderPath or a
+later marker expression failed. The actual image was `20261030.294.1`, VS
+`18.11.12328.437`. Configuration, native probes and final tool/source seals
+remain unavailable; every acceptance gate stays closed. Exact provider identities
+are in the [checkpoint ledger](r19-frozen-checkpoint-20261031.json).
+
 ### Manual source build
 
 Use the manual **R19 separate ASR-only source experiment** workflow on a clean
