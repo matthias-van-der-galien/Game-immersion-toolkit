@@ -1077,6 +1077,81 @@ occurred. Neither result closes R18 lock behavior, keeper loss, rights or native
 Windows 11 gates. Exact artifact identities and earlier checkpoints remain in
 the [checkpoint ledger](r19-frozen-checkpoint-20261031.json); R19 stays incomplete.
 
+## Negative explicit-close checkpoint at 31ee4c9
+
+[Run 41230110931](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41230110931)
+at `31ee4c9d14594b34ef8bfbfbe583543f6261c296` includes the deterministic
+TranscriptStore close change and its explicit hosted contract selection.
+It passed 1,191 contracts without skips (one warning, 131.00 seconds), freezing
+and the native/C1/cold-slot probes. The keeper step then reported
+`registered-start` / `registered-listener-changed`, with
+`cleanup=unconfirmed-recovery-required`, and hit its external five-minute
+deadline. That deadline records a failed attempt with unconfirmed cleanup;
+it does not establish that every owned process or lease closed. The native cause
+remains unknown; this is not a
+demonstrated storage regression or permission to weaken listener identity.
+
+Only `keeper-before-resume` completed: two writers created, none resumed,
+retained signals and two source-entry blocks. There is no completed second-case
+result. Missing metadata does not prove that no intermediate physical activity
+occurred. All four downstream C3/C4/C5/C6 steps were skipped and their receipts
+are absent. **`a1c5e92` remains the last complete frozen checkpoint.**
+
+Root and peer verified partial archive `13053797653`, 1,333,529 bytes, SHA-256
+`2081ae84727f87b44778c79fdd6ff2d85d103759a22ee808ef354ccd3a9dd5dd`.
+Its nine exact entries retain pre-failure observations, the failed keeper receipt,
+source kit and inventory/A2/P1 metadata. Failure-only archive `13053678109`,
+1,052 bytes, SHA-256
+`2411187b394117ea47691e43f1a26e3dfb3805a5a88df057a4dcb08acedea6ce`,
+contains the identical 2,038-byte keeper JSON, SHA-256
+`dfd759fd78cff5e46f920c6bad8e30b562749265d070c8be586e1325a16159a9`.
+The six other source/metadata archives were separately verified, for eight in
+total. Their success does not promote the failed runtime run.
+
+The partial inventory binds 1,449 files, 642 directories and 620,139,242 bytes;
+all 473 A2/P1 records and 113 notice references (104 distinct hashes) matched.
+Reference artifact `13052663910`, 1,095,192 bytes, SHA-256
+`cb362a43a315ffb51467adade3c8a461383cb027bf4b8286602a9ae256b9e502`,
+again reproduced nine identical outputs from the six-input Xiph kit and passed
+decode/fault/origin checks. Its actual CMake was `4.4.4`, compiler
+`19.51.36260.0`, on image `20261021.278.1`; the main image was
+`20261030.294.1`. This reference-recipe observation changes no isolated
+FFmpeg/ASR CMake4.4.5 pin. Exact Git31 source pins were checked without using
+mutable local runtime files or claiming a locally recomputed global fingerprint.
+Generated compiled internals remain unverified without binary inspection.
+
+The independent source repro also shows that a not-ready listener snapshot can
+change to ordinary startup listeners before any HTTP attempt and trigger the
+same refusal. That identifies a bounded readiness-review boundary, not this
+run's native cause. Complete ready-listener/process ownership checks remain
+required. Rights, Windows 11, keeper loss, global writers, warm routing and
+R19 completion remain open; no installer was built.
+
+## Separate e8416e9 negatives and source-only follow-ups
+
+[ASR run 41229142323](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41229142323)
+at `e8416e9ed20bf0595d7559fa8430609ca0a74803` still failed before configure.
+Its independently verified single-entry artifact `13052702817`, 2,058 bytes,
+SHA-256 `2db0bb18a79576042bfc89a48952d2a3f009311af77386345621901880deb2f2`,
+reports the fixed `absolute-path-required` resource in both rejected states,
+empty default folders and no after-call constant or DoNotVerify properties.
+The resource does not identify a private path/variable or prove a repair.
+
+[C7 v2 run 41229013616](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41229013616)
+on the same head passed 89 contracts without skips, then failed its baseline
+protocol. Artifact `13052329447`, 750 bytes, SHA-256
+`bbb2f106c32f1fc107e3dbacc9ab775338d94e2ba418294506bda759529bb894`,
+delivered `connected` / `receive-script-progress` / `not-signaled` only.
+The child signal is pre-close context; cleanup is unconfirmed and native cause
+unknown. No bounded legacy-open or READONLY observation was delivered.
+
+The [operation fence](r19-mutable-store-lifetime.md) at `1d933dd` builds on
+explicit connection close but proves only a programmatic per-store scope drain.
+It does not prove physical handle release, detach/reopen, global admission or a
+usable warm OCR session. The [OS-derived SystemDrive source change](r19-asr-source-experiment.md#common-data-preflight-and-pending-os-derived-systemdrive-binding)
+at `3b3a282` is separately native pending. Neither change upgrades these
+historical negative receipts or any rights/Windows/R19 gate.
+
 ## Continuation and rollback
 
 Use the integrated workflow for the extracted runtime/native/ASR observations,

@@ -3303,5 +3303,380 @@
     "native_windows_11_acceptance": "unavailable",
     "r19_complete": false,
     "installer": "not-built"
+  },
+  "negative_transcript_close_keeper_31ee4c9": {
+    "head": "31ee4c9d14594b34ef8bfbfbe583543f6261c296",
+    "run": 41230110931,
+    "job": 124622606679,
+    "attempt": 1,
+    "workflow": "failure",
+    "run_url": "https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41230110931",
+    "build_id": "runtime-experiment-41230110931-1",
+    "image": "windows-2025-vs2026",
+    "image_version": "20261030.294.1",
+    "contracts_passed": 1191,
+    "contracts_skipped": 0,
+    "contracts_warnings": 1,
+    "contracts_duration_seconds": 131.0,
+    "disposition": "partial pre-failure evidence only; not a complete frozen checkpoint",
+    "last_complete_frozen_checkpoint": "a1c5e9261d1115ba80c73b0fb4d7dcea1c32ff89",
+    "terminal_condition": "external-5-minute-keeper-step-timeout",
+    "native_cause": "unknown; no storage-cause inference",
+    "partial_metadata_artifact": {
+      "id": 13053797653,
+      "bytes": 1333529,
+      "sha256": "2081ae84727f87b44778c79fdd6ff2d85d103759a22ee808ef354ccd3a9dd5dd",
+      "run": 41230110931,
+      "entries": 9
+    },
+    "partial_metadata_entries": [
+      "checks/r19-frozen-runtime.json",
+      "checks/r19-guarded-slots.json",
+      "checks/r19-frozen-keeper.json",
+      "runtime-bundle/build-check.json",
+      "runtime-bundle/quarantine/RUNTIME-INVENTORY.json",
+      "runtime-bundle/quarantine/NATIVE-COLLECTION-INPUTS.json",
+      "runtime-bundle/quarantine/NATIVE-COLLECTION.json",
+      "runtime-bundle/quarantine/NATIVE-IMAGES.json",
+      "reference-codec/codec-sources.zip"
+    ],
+    "keeper_failure_artifact": {
+      "id": 13053678109,
+      "bytes": 1052,
+      "sha256": "2411187b394117ea47691e43f1a26e3dfb3805a5a88df057a4dcb08acedea6ce",
+      "run": 41230110931,
+      "entries": 1
+    },
+    "keeper_failure_json": {
+      "bytes": 2038,
+      "sha256": "dfd759fd78cff5e46f920c6bad8e30b562749265d070c8be586e1325a16159a9"
+    },
+    "keeper": {
+      "source_commit": "31ee4c9d14594b34ef8bfbfbe583543f6261c296",
+      "warm_routing": "unavailable",
+      "dynamic_writer_admission": "unavailable",
+      "legacy_source_sha256": "f9469ccb51c99b814a615e66eb9b337e8b1ba8598a0fd794dbe420c8be4c8e9e",
+      "credentials": "not-accessed",
+      "schema": "proxy-r19-frozen-keeper-receipt-v1",
+      "failure_stage": "registered-start",
+      "guardian_console_mode": "detached-process",
+      "strict_writer_runtime_budget_ms": 30000,
+      "writer_state": "fresh-authored-state",
+      "installer": "not-built",
+      "http_transport_timeout_ms": 35000,
+      "authority": "two-retained-createprocess-records",
+      "writer_console_mode": "detached-process",
+      "r19_complete": false,
+      "guardian_descendants": {
+        "schema": "proxy-r19-guardian-census-observation-v1",
+        "state": "not-observed",
+        "reason": "none",
+        "candidate_count": 0,
+        "inspected_count": 0,
+        "truncated": false,
+        "lineage": "census-not-authority",
+        "records": []
+      },
+      "source_operation_blocked_observations": 2,
+      "store_copy": false,
+      "migration": false,
+      "status": "failed",
+      "legacy_source_operation": "existing-enter-operation",
+      "build_id": "runtime-experiment-41230110931-1",
+      "failure_category": "registered-listener-changed",
+      "cases": [
+        {
+          "strict_writer_protocol": "writers-never-resumed",
+          "guardian_exit": "signaled",
+          "writers_resumed": 0,
+          "writers_created": 2,
+          "legacy_exclusion": "held-through-writer-exit",
+          "status": "passed",
+          "case": "keeper-before-resume",
+          "writer_exit": "retained-objects-signaled"
+        }
+      ],
+      "production_activation": false,
+      "keeper_loss": "unavailable",
+      "census": "bounded-observations-and-onedir-source-inference-not-lifetime-proof",
+      "cleanup": "unconfirmed-recovery-required",
+      "target_lease": "separate-private-keeper-root",
+      "api_external_side_effects": "mocked",
+      "guardian": "retained-popen-readonly-frontend-port-zero",
+      "scope": "authored-guardian-loss-with-living-frozen-keeper"
+    },
+    "completed_keeper_cases": 1,
+    "remaining_keeper_case": "no completed result; intermediate physical activity is not inferred from missing metadata",
+    "C3_C4_C5_C6": {
+      "C3": "not-run/no-pass",
+      "C4": "not-run/no-pass",
+      "C5": "not-run/no-pass",
+      "C6": "not-run/no-pass"
+    },
+    "missing_copy_receipts": [
+      "checks/r19-frozen-data-copy-grammar.json",
+      "checks/r19-frozen-data-copy-resume.json",
+      "checks/r19-frozen-data-copy-wal.json",
+      "checks/r19-frozen-data-copy.json"
+    ],
+    "inventory": {
+      "files": 1449,
+      "directories": 642,
+      "total_bytes": 620139242,
+      "bytes": 661687,
+      "sha256": "c9d9f7d5b177a850c0a9ecce9af95780982c973cc4bdd66c741f62c9cec74d61"
+    },
+    "native_a2_p1_records": 473,
+    "a2_provenance_roles": {
+      "generated-processing-observed": 2,
+      "declared-supplier-observed": 469,
+      "windows-system-observed": 2
+    },
+    "components": 57,
+    "notice_occurrences": 113,
+    "distinct_notice_hashes": 104,
+    "all_notice_hashes_in_inventory": true,
+    "source_rebuild_artifact": {
+      "id": 13052663910,
+      "bytes": 1095192,
+      "sha256": "cb362a43a315ffb51467adade3c8a461383cb027bf4b8286602a9ae256b9e502",
+      "run": 41230110931,
+      "entries": 5
+    },
+    "xiph_source_kit_sha256": "7dd55f62a9c558bf1065ec89b873f9f17dc6c542e806bf44e157475c870ab7b9",
+    "source_inputs": 6,
+    "identical_rebuilt_outputs": 9,
+    "reference_tools": {
+      "cmake": "4.4.4",
+      "compiler": "19.51.36260.0",
+      "scope": "actual Xiph reference recipe observation; FFmpeg/ASR isolated CMake4.4.5 pin unchanged"
+    },
+    "reference_image_version": "20261021.278.1",
+    "auxiliary_metadata_artifacts": [
+      {
+        "id": 13053357517,
+        "bytes": 1686,
+        "sha256": "7aa353c1306a8b2df0ff918f31bf961e2f383dceaffd457c7e780e2b0d97f822",
+        "run": 41230110932,
+        "name": "r19-managed-helper-metadata"
+      },
+      {
+        "id": 13053247769,
+        "bytes": 675,
+        "sha256": "441950b6dedcee946ee846865b1dbee99f3fd1fd2a646831a99fca0f55b86c8f",
+        "run": 41230110932,
+        "name": "r19-node-helper-metadata"
+      },
+      {
+        "id": 13053870211,
+        "bytes": 537,
+        "sha256": "5b264ebdff45eb449bb0df785e8b30d8698aa9cad7ffb42611e2fb82145c774f",
+        "run": 41230110930,
+        "name": "r19-protected-test-state"
+      },
+      {
+        "id": 13052908444,
+        "bytes": 876,
+        "sha256": "3ba5e44c74a0f71733125299dcd8e4ea1f2ed621c31ff850d0a83c76ec322fb1",
+        "run": 41230110930,
+        "name": "r19-diagnostic-metadata"
+      },
+      {
+        "id": 13052743884,
+        "bytes": 3222,
+        "sha256": "fb91f317f43a8fd678b6c262009f946cb0d2708d5e2fd501a13576e49521e80b",
+        "run": 41230110930,
+        "name": "r19-frontend-experiment-metadata"
+      }
+    ],
+    "metadata_source_archives_verified": 8,
+    "pre_failure_native_C1_cold_slots": "verified within their existing authored scopes",
+    "independent_download_review": "root-and-peer-verified-negative-partial-evidence",
+    "source_pins": {
+      "backend/storage.py": "f44656c7f72da73ae6537a7cdda2f971f45a62a205f3812c6999d99cc86e323b",
+      "backend/runtime_data_copy_probe.py": "4c50e3faa0120fcd881142544d245f6b97ee447f60a33d1259516da46e395ac4",
+      ".github/workflows/r19-runtime-experiment.yml": "bc5595d6be5fa7c4a0d33d3225c75924898c0ba80b5ab791a1c43b957a1a0753"
+    },
+    "compiled_internals_provenance": "unverified; no native binary download or independent compiled-body inspection",
+    "source_fingerprint_recomputed_locally": false,
+    "native_payload_downloaded": false,
+    "listener_startup_source_repro": "normal listener addition during a not-ready poll can raise registered-listener-changed without an HTTP attempt; not proven native cause",
+    "production_execution_allowed": false,
+    "runtime_collection_allowed": false,
+    "source_delivery_approved": false,
+    "rights_review": "pending-exact-output",
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built"
+  },
+  "asr_dnv_absolute_path_required_e8416e9": {
+    "head": "e8416e9ed20bf0595d7559fa8430609ca0a74803",
+    "run": 41229142323,
+    "job": 124619489794,
+    "attempt": 1,
+    "workflow": "failure",
+    "run_url": "https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41229142323",
+    "phase": "common-data-bound",
+    "image_version": "20261021.278.1",
+    "selected_vs_version": "18.11.12315.225",
+    "artifact": {
+      "id": 13052702817,
+      "bytes": 2058,
+      "sha256": "2db0bb18a79576042bfc89a48952d2a3f009311af77386345621901880deb2f2",
+      "entries": [
+        "ASR-FAILURE.json"
+      ]
+    },
+    "failure_json": {
+      "bytes": 5401,
+      "sha256": "3581d8869badf5fb071c2684e79228c74af61c623db0088b30ce1296dd1a2c4c"
+    },
+    "common_data": {
+      "baseline": {
+        "allusersprofile_equal": true,
+        "dnv_error_resource": "absolute-path-required",
+        "do_not_verify": {
+          "allusersprofile_equal": null,
+          "empty": null,
+          "programdata_equal": null,
+          "rooted": null
+        },
+        "do_not_verify_call": "not-observed",
+        "folder": "empty",
+        "msbuild_codes": [
+          "MSB4184"
+        ],
+        "programdata_equal": true,
+        "reason": "process-rejected",
+        "root": "not-run",
+        "rooted": null,
+        "runtime": "full",
+        "status": "rejected",
+        "x64": true
+      },
+      "binding": "PROGRAMDATA+ALLUSERSPROFILE",
+      "bound": {
+        "allusersprofile_equal": false,
+        "dnv_error_resource": "absolute-path-required",
+        "do_not_verify": {
+          "allusersprofile_equal": null,
+          "empty": null,
+          "programdata_equal": null,
+          "rooted": null
+        },
+        "do_not_verify_call": "not-observed",
+        "folder": "empty",
+        "msbuild_codes": [
+          "MSB4184"
+        ],
+        "programdata_equal": false,
+        "reason": "process-rejected",
+        "root": "not-run",
+        "rooted": null,
+        "runtime": "full",
+        "status": "rejected",
+        "x64": true
+      },
+      "origin": "FOLDERID_ProgramData",
+      "origin_stable": "verified"
+    },
+    "disposition": "both defaults empty; two owned absolute-path-required resources observed; after-call constants and four DoNotVerify properties unavailable",
+    "native_cause": "absolute-path-required resource observed; private path/variable/source-binary correspondence and successful repair unproven",
+    "initial_cmake_variant_verified": true,
+    "configure_compile_probes": "not-reached",
+    "final_native_tool_seals_and_cohort": "not-delivered",
+    "independent_download_review": "root-and-peer-verified-negative-observation",
+    "production_execution_allowed": false,
+    "runtime_collection_allowed": false,
+    "source_delivery_approved": false,
+    "rights_approval": false,
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built"
+  },
+  "legacy_lock_attribute_checkpoint_refusal_e8416e9": {
+    "head": "e8416e9ed20bf0595d7559fa8430609ca0a74803",
+    "run": 41229013616,
+    "job": 124619103775,
+    "attempt": 1,
+    "workflow": "failure",
+    "run_url": "https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41229013616",
+    "image_version": "20261021.278.1",
+    "contracts_passed": 89,
+    "contracts_skipped": 0,
+    "contracts_duration_seconds": 0.21,
+    "artifact": {
+      "id": 13052329447,
+      "bytes": 750,
+      "sha256": "bbb2f106c32f1fc107e3dbacc9ab775338d94e2ba418294506bda759529bb894",
+      "entries": 1
+    },
+    "mechanism_json": {
+      "bytes": 1163,
+      "sha256": "1c95bbe4afb6eaeb59d5288cbb2d0bceda4bdbcff4b1f15f053ec7a06ff7ced6"
+    },
+    "mechanism": {
+      "baseline_checkpoint": {
+        "child_state": "not-signaled",
+        "parent_step": "receive-script-progress",
+        "script_step": "connected"
+      },
+      "candidate_data_writers": 0,
+      "cleanup": "unconfirmed-fixture-retained",
+      "failure": "protocol-refused",
+      "keeper_loss_acceptance": false,
+      "legacy_source_sha256": "f9469ccb51c99b814a615e66eb9b337e8b1ba8598a0fd794dbe420c8be4c8e9e",
+      "native_windows_11_acceptance": "unavailable",
+      "observed": [],
+      "phase": "legacy-baseline",
+      "production_allowed": false,
+      "r19_complete": false,
+      "rights_approval": false,
+      "schema": "proxy-r19-legacy-lock-attribute-mechanism-v2",
+      "scope": "authored-local-ntfs-no-writers-mechanism",
+      "status": "failed",
+      "timestamp_equalities": {}
+    },
+    "disposition": "connected checkpoint delivered; next grant-validation checkpoint not delivered; child not-signaled is pre-close context only",
+    "native_cause": "unknown; no exit, private grant, successful legacy-open, READONLY or physical-no-op inference",
+    "independent_download_review": "root-and-peer-verified-negative-observation",
+    "source_fingerprint_recomputed_locally": false,
+    "r18_lock_contract_closed": false,
+    "keeper_loss_acceptance": false,
+    "rights_approval": false,
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built"
+  },
+  "source_only_store_operation_fence_1d933dd": {
+    "source_commit": "1d933dd1505d3aa22da31fe8951f103e3e7832bf",
+    "status": "source-implemented-native-pending",
+    "document": "r19-mutable-store-lifetime.md",
+    "scope": "one issuing TranscriptStore connection-operation admission/drain fence",
+    "proof_limit": "admitted scopes drained and Connection.close returned without recorded failure; not physical SQLite/OS resource closure or completion of every outer method",
+    "cursor_resource_lifetime": "unfinished statements/cursors can outlive sqlite3_close_v2; separate physical-detach prerequisite",
+    "runtime_data_fence": false,
+    "all_store_global_writer_barrier": false,
+    "detach_reopen_acceptance": false,
+    "warm_ocr_acceptance": false,
+    "native_receipt": "not-delivered",
+    "rights_approval": false,
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built"
+  },
+  "source_only_asr_systemdrive_binding_3b3a282": {
+    "source_commit": "3b3a2823bd82717357e2e8abfd29a95394487425",
+    "status": "source-implemented-native-pending",
+    "driver_sha256": "58d403bc29e8b0c64d4583039780abf4ff4de37d320a60b1db3f8c37a31ba24c",
+    "binding": "PROGRAMDATA+ALLUSERSPROFILE+SystemDrive",
+    "origin": "FOLDERID_ProgramData+GetSystemWindowsDirectoryW",
+    "scope": "same two isolated common-data states; OS-derived SystemDrive in bound state only, without ambient fallback",
+    "successful_native_repair": "not-proved",
+    "configure_compile_inference": "not-proved",
+    "rights_approval": false,
+    "native_windows_11_acceptance": "unavailable",
+    "r19_complete": false,
+    "installer": "not-built"
   }
 }

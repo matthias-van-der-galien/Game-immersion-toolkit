@@ -9,6 +9,8 @@ authored-copy observation described below.
 The later `a1c5e92` checkpoint also passed the separate populated local grammar
 fixture through actual frozen HTTP/SQLite; its distinct C6 scope is recorded
 below. The earlier plain, interrupted and retained-WAL observations remain intact.
+The later explicit-close `31ee4c9` run failed its keeper step before C3/C4/C5/C6.
+It supplies no new copy pass; `a1c5e92` remains the last complete frozen checkpoint.
 
 The existing [completion plan](r19-completion-plan.md) C2/C3/C4 gates remain
 open. The successful historical owned-host, cold-slot and
@@ -626,9 +628,9 @@ exact identities and earlier failures, and `r19_complete` remains false.
 
 ## Deterministic transcript lifetime prerequisite
 
-The source store now closes the actual connection after each of its sixteen
-transaction scopes, including initialization, early return, rollback and commit
-failure. SQLite still owns the transaction outcome. The raw `_connect` factory
+The explicit-close source attempts one actual connection close after each of
+its sixteen transaction scopes, including initialization, early return, rollback
+and commit failure. SQLite still owns the transaction outcome. The raw `_connect` factory
 contract and C5 configuration policy are unchanged. Setup and offline OCR replay
 use the same production scope; neither adds a second close or retains successful
 connections as purported ownership evidence.
@@ -647,8 +649,36 @@ favorite0 from full-set favorite1. This is local source evidence, not a new
 Windows supplier result; the frozen SQLite variant requires its own exact-source
 C3/C4/C5/C6 attempt. Earlier downloaded receipts retain their original meaning.
 
-This change adds no data-admission fence, active-operation drain, detach/reopen
-API, cache/settings rebinding or owner transition. It does not establish that a
-living candidate can replace its data while preserving a usable OCR session.
-Whole-cohort retained signaling, global writers, keeper loss, warm routing,
-rights and ordinary-user Windows 11 gates remain open.
+That explicit-close slice added no data-admission fence, active-operation drain,
+detach/reopen API, cache/settings rebinding or owner transition. A successful
+`Connection.close()` return is not a physical SQLite/OS handle-closure proof:
+retained unfinished statements/cursors can outlive `sqlite3_close_v2`.
+
+At `31ee4c9`, [run 41230110931](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41230110931)
+included the explicit-close implementation and selected storage tests. All 1,191
+build-host contracts passed without skips (one warning, 131.00 seconds), then
+the keeper step failed at `registered-start` / `registered-listener-changed`
+and its external five-minute deadline. Only the before-resume keeper case
+completed; cleanup remains unconfirmed. C3/C4/C5/C6 were skipped and their
+receipts are absent. Root and peer verified the nine-entry partial archive
+`13053797653` and separate failure-only archive `13053678109`, alongside six
+other source/metadata archives. Their exact identities and the negative scope
+remain in the [checkpoint ledger](r19-frozen-checkpoint-20261031.json).
+No storage cause, successful cleanup or current frozen copy pass is inferred.
+
+## Separate per-store operation fence, source only
+
+The later `1d933dd` [connection-operation fence](r19-mutable-store-lifetime.md)
+closes admission to one issuing TranscriptStore and waits for its admitted
+transaction scopes and close calls. Its typed token checks that exact store,
+token and local epoch. This is a source implementation with local SQLite/thread
+regressions, not a new frozen/native receipt. It is distinct from the earlier
+close prerequisite and does not certify physical resource release or return of
+every outer public method. Other store instances and raw SQLite clients are
+outside its scope.
+
+It grants no aggregate RuntimeDataFence, all-store/global writer, detach/reopen,
+copy/activation, cache/settings rebinding or warm OCR authority. Whole-cohort
+retained signaling, keeper loss, warm routing, rights and ordinary-user Windows
+11 gates remain open. A living candidate's usable OCR session across data
+replacement is still unproved.
