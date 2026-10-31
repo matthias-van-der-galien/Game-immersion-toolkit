@@ -3,18 +3,22 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from contextlib import closing
 import sqlite3
+import threading
 from types import SimpleNamespace
 import pytest
 
 from backend.models import TextMatch
-from backend.storage import TranscriptStore, TranscriptConnectionCloseError, TranscriptStorePoisonedError
+from backend.storage import (TranscriptStore, TranscriptConnectionCloseError, TranscriptStorePoisonedError,
+                             TranscriptConnectionFence)
+from backend.runtime_writers import WritersQuiescing
 
 
 @pytest.fixture
 def operation_connections(tmp_path, monkeypatch):
     """Actual SQLite objects observed only by the test; never a product registry."""
     raw = sqlite3.connect
-    state = SimpleNamespace(opened=[], close_error=None, transaction_errors=[])
+    state = SimpleNamespace(opened=[], close_error=None, transaction_errors=[],
+                            close_entered=None, close_release=None, threaded=False)
     class Observed(sqlite3.Connection):
         def __exit__(self, *args):
             try: return super().__exit__(*args)
@@ -23,10 +27,17 @@ def operation_connections(tmp_path, monkeypatch):
                 raise
         def close(self):
             self.close_calls += 1
+            if state.close_entered is not None:
+                state.close_entered.set()
+                assert state.close_release.wait(5), 'Owned close was not released.'
             if state.close_error is not None: raise state.close_error
             super().close()
             self.closed_cleanly = True
     def connect(*args, **options):
+        if state.threaded:
+            # Test-only observation/disposal; product connections retain their
+            # original default thread check and thread-confined operation.
+            options['check_same_thread'] = False
         connection = raw(*args, factory=Observed, **options)
         connection.close_calls, connection.closed_cleanly = 0, False
         state.opened.append(connection)
@@ -88,6 +99,9 @@ def test_operation_body_exception_rolls_back_and_closes_without_replacing_error(
     assert state.opened[-1].close_calls == 1 and state.opened[-1].closed_cleanly
     with closing(state.raw(state.path)) as check:
         assert check.execute('SELECT favorite FROM transcript_lines').fetchone()[0] == 0
+    fence = store.freeze_connections(0)
+    fence.check(store)
+    store.resume_connections(fence)
 
 
 def test_initialization_sql_failure_closes_its_real_connection(operation_connections, monkeypatch):
@@ -176,6 +190,330 @@ def test_real_commit_failure_rolls_back_and_closes(operation_connections):
     assert raised.value is state.transaction_errors[-1]
     assert state.opened[-1].close_calls == 1 and state.opened[-1].closed_cleanly
     assert not store._connection_failures
+    fence = store.freeze_connections(0)
+    store.resume_connections(fence)
+
+
+def _thread_call(operation):
+    state = SimpleNamespace(done=threading.Event(), value=None, error=None)
+    def call():
+        try: state.value = operation()
+        except BaseException as error: state.error = error
+        finally: state.done.set()
+    state.thread = threading.Thread(target=call)
+    state.thread.start()
+    return state
+
+
+def _observe_admission_stop(store, monkeypatch):
+    stopped = threading.Event()
+    original = store._connections_gate.stop_admission
+    def stop():
+        original()
+        stopped.set()
+    monkeypatch.setattr(store._connections_gate, 'stop_admission', stop)
+    return stopped
+
+
+def test_connection_fence_waits_for_real_transaction_and_close_before_resuming(operation_connections, monkeypatch):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    line = store.add(_owned_match(), 'owned-session')
+    state.threaded = True
+    body_entered, body_release = threading.Event(), threading.Event()
+    state.close_entered, state.close_release = threading.Event(), threading.Event()
+    stopped = _observe_admission_stop(store, monkeypatch)
+    def update():
+        with store._connection_scope() as connection:
+            connection.execute('UPDATE transcript_lines SET favorite=1 WHERE id=?', (line.id,))
+            body_entered.set()
+            assert body_release.wait(5)
+    operation = _thread_call(update)
+    freezer = None
+    try:
+        assert body_entered.wait(2)
+        freezer = _thread_call(lambda: store.freeze_connections(4))
+        assert stopped.wait(2)
+        opened = len(state.opened)
+        with pytest.raises(WritersQuiescing): store.count()
+        assert len(state.opened) == opened and not freezer.done.is_set()
+        body_release.set()
+        assert state.close_entered.wait(2)
+        assert not freezer.done.is_set(), 'SQL commit alone must not complete the fence.'
+        state.close_release.set()
+        assert operation.done.wait(2) and freezer.done.wait(2)
+        assert operation.error is None and freezer.error is None
+        fence = freezer.value
+        fence.check(store)
+        assert state.opened[-1].closed_cleanly and state.opened[-1].close_calls == 1
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            state.opened[-1].execute('SELECT 1')
+        with pytest.raises(WritersQuiescing): store.get(line.id)
+        original_resume = store._connections_gate.resume
+        def resume():
+            # Actual new operation is still refused at the point the old token
+            # is invalidated, before the underlying admission gate opens.
+            with pytest.raises(ValueError): store._check_connection_fence(fence)
+            with pytest.raises(WritersQuiescing): store.count()
+            original_resume()
+        monkeypatch.setattr(store._connections_gate, 'resume', resume)
+        store.resume_connections(fence)
+        with pytest.raises(ValueError): fence.check(store)
+        assert store.get(line.id).favorite is True and store.get(line.id).chinese == '合成记录'
+    finally:
+        body_release.set(); state.close_release.set()
+        operation.thread.join(5)
+        if freezer is not None: freezer.thread.join(5)
+        assert not operation.thread.is_alive() and (freezer is None or not freezer.thread.is_alive())
+
+
+def test_freeze_timeout_retains_closed_admission_until_actual_scope_completion(operation_connections):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    state.threaded = True
+    entered, release = threading.Event(), threading.Event()
+    def read():
+        with store._connection_scope() as connection:
+            connection.execute('SELECT COUNT(*) FROM transcript_lines').fetchone()
+            entered.set()
+            assert release.wait(5)
+    operation = _thread_call(read)
+    try:
+        assert entered.wait(2)
+        with pytest.raises(TimeoutError): store.freeze_connections(.02)
+        assert store._connections_fence is None and not operation.done.is_set()
+        opened = len(state.opened)
+        with pytest.raises(WritersQuiescing): store.count()
+        with pytest.raises(ValueError): store.resume_connections(None)
+        assert len(state.opened) == opened
+        release.set()
+        assert operation.done.wait(2) and operation.error is None
+        fence = store.freeze_connections(1)
+        fence.check(store)
+        store.resume_connections(fence)
+        assert store.count() == 0
+    finally:
+        release.set(); operation.thread.join(5)
+        assert not operation.thread.is_alive()
+
+
+def test_concurrent_short_freezer_is_bounded_while_another_waits_on_real_close(operation_connections, monkeypatch):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    state.threaded = True
+    state.close_entered, state.close_release = threading.Event(), threading.Event()
+    stopped = _observe_admission_stop(store, monkeypatch)
+    operation = _thread_call(store.count)
+    long_freezer = short_freezer = None
+    try:
+        assert state.close_entered.wait(2)
+        long_freezer = _thread_call(lambda: store.freeze_connections(4))
+        assert stopped.wait(2)
+        short_freezer = _thread_call(lambda: store.freeze_connections(.02))
+        assert short_freezer.done.wait(2), 'A short freeze must not wait for the long freezer budget.'
+        assert isinstance(short_freezer.error, TimeoutError)
+        assert not long_freezer.done.is_set() and not operation.done.is_set()
+        state.close_release.set()
+        assert operation.done.wait(2) and long_freezer.done.wait(2)
+        assert operation.error is None and long_freezer.error is None
+        assert store.freeze_connections(0) is long_freezer.value
+        store.resume_connections(long_freezer.value)
+    finally:
+        state.close_release.set(); operation.thread.join(5)
+        if long_freezer is not None: long_freezer.thread.join(5)
+        if short_freezer is not None: short_freezer.thread.join(5)
+        assert not operation.thread.is_alive()
+        assert long_freezer is None or not long_freezer.thread.is_alive()
+        assert short_freezer is None or not short_freezer.thread.is_alive()
+
+
+def test_serialization_time_consumes_the_same_freeze_drain_budget(operation_connections, monkeypatch):
+    # Deterministic clock advancement at an actual lock boundary, without a
+    # timing sleep or replacing the gate's real closed-admission behavior.
+    from backend import storage
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    clock = SimpleNamespace(now=100.0)
+    lock = store._connections_lock
+    class ObservedLock:
+        def acquire(self, *, timeout):
+            assert timeout == pytest.approx(1.0)
+            acquired = lock.acquire(timeout=timeout)
+            clock.now += .75
+            return acquired
+        def release(self): lock.release()
+    observed = []
+    original = store._connections_gate._condition.acquire
+    def acquire(*, timeout):
+        observed.append(timeout)
+        acquired = original(timeout=timeout)
+        if len(observed) == 2: clock.now += .3
+        return acquired
+    monkeypatch.setattr(storage, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(store, '_connections_lock', ObservedLock())
+    monkeypatch.setattr(store._connections_gate._condition, 'acquire', acquire)
+    with pytest.raises(TimeoutError): store.freeze_connections(1)
+    assert observed == [pytest.approx(.25), pytest.approx(.25)] and store._connections_fence is None
+    with pytest.raises(WritersQuiescing): store.count()
+
+
+def test_freeze_timeout_bounds_gate_contention_after_admission_and_drain_begin(operation_connections, monkeypatch):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    state.threaded = True
+    state.close_entered, state.close_release = threading.Event(), threading.Event()
+    stopped = _observe_admission_stop(store, monkeypatch)
+    held, release = threading.Event(), threading.Event()
+    operation = _thread_call(store.count)
+    holder = freezer = None
+    def hold_after_stop():
+        assert stopped.wait(2)
+        with store._connections_gate._condition:
+            held.set()
+            assert release.wait(5)
+    try:
+        assert state.close_entered.wait(2)
+        holder = _thread_call(hold_after_stop)
+        freezer = _thread_call(lambda: store.freeze_connections(.05))
+        assert held.wait(2), 'The condition holder must enter after freeze closes admission.'
+        assert freezer.done.wait(.5), 'Late condition reacquisition must still respect the total freeze budget.'
+        assert isinstance(freezer.error, TimeoutError)
+        assert not holder.done.is_set() and not operation.done.is_set()
+        assert store._connections_fence is None and not store._connections_gate._accepting
+    finally:
+        release.set(); state.close_release.set()
+        operation.thread.join(5)
+        if holder is not None: holder.thread.join(5)
+        if freezer is not None: freezer.thread.join(5)
+        assert not operation.thread.is_alive()
+        assert holder is None or not holder.thread.is_alive()
+        assert freezer is None or not freezer.thread.is_alive()
+    assert holder.error is None and operation.error is None
+    fence = store.freeze_connections(0)
+    store.resume_connections(fence)
+    assert store.count() == 0
+
+
+@pytest.mark.parametrize('held_lock', ['failure', 'gate'])
+def test_freeze_budget_also_bounds_failure_and_gate_lock_entry(tmp_path, held_lock):
+    store = TranscriptStore(tmp_path/'owned.db')
+    lock = store._failure_lock if held_lock == 'failure' else store._connections_gate._condition
+    held, release = threading.Event(), threading.Event()
+    def hold():
+        with lock:
+            held.set()
+            assert release.wait(5)
+    holder = _thread_call(hold)
+    freezer = None
+    try:
+        assert held.wait(2)
+        freezer = _thread_call(lambda: store.freeze_connections(.02))
+        assert freezer.done.wait(2), 'The same freeze budget must cover each lock acquisition.'
+        assert isinstance(freezer.error, TimeoutError) and not holder.done.is_set()
+        assert store._connections_fence is None
+    finally:
+        release.set(); holder.thread.join(5)
+        if freezer is not None: freezer.thread.join(5)
+        assert not holder.thread.is_alive() and (freezer is None or not freezer.thread.is_alive())
+    assert holder.error is None
+    fence = store.freeze_connections(0)
+    store.resume_connections(fence)
+    assert store.count() == 0
+
+
+def test_failed_real_close_cannot_mint_or_resume_a_connection_fence(operation_connections, monkeypatch):
+    state = operation_connections
+    store = TranscriptStore(state.path)
+    state.threaded = True
+    state.close_entered, state.close_release = threading.Event(), threading.Event()
+    state.close_error = OSError('authored close fault')
+    stopped = _observe_admission_stop(store, monkeypatch)
+    operation = _thread_call(store.count)
+    freezer = None
+    try:
+        assert state.close_entered.wait(2)
+        freezer = _thread_call(lambda: store.freeze_connections(4))
+        assert stopped.wait(2)
+        state.close_release.set()
+        assert operation.done.wait(2) and freezer.done.wait(2)
+        failure = operation.error
+        assert isinstance(failure, TranscriptConnectionCloseError)
+        assert isinstance(freezer.error, TranscriptStorePoisonedError) and freezer.error.failure is failure
+        assert failure.connection is state.opened[-1] and failure.close_error is state.close_error
+        assert store._connections_fence is None and store._connection_failures == [failure]
+        opened, traceback = len(state.opened), failure.__traceback__
+        for _ in range(3):
+            with pytest.raises(TranscriptStorePoisonedError) as refused: store.freeze_connections(0)
+            assert refused.value.failure is failure
+            with pytest.raises(TranscriptStorePoisonedError) as refused: store.resume_connections(None)
+            assert refused.value.failure is failure
+        assert len(state.opened) == opened and failure.connection.close_calls == 1
+        assert failure.__traceback__ is traceback
+    finally:
+        state.close_release.set(); operation.thread.join(5)
+        if freezer is not None: freezer.thread.join(5)
+        assert not operation.thread.is_alive() and (freezer is None or not freezer.thread.is_alive())
+
+
+def test_connection_fence_tokens_are_store_epoch_and_issued_object_bound(tmp_path):
+    first, second = TranscriptStore(tmp_path/'first.db'), TranscriptStore(tmp_path/'second.db')
+    fence = first.freeze_connections(0)
+    assert type(fence) is TranscriptConnectionFence and first.freeze_connections(0) is fence
+    forged = TranscriptConnectionFence(first, fence._epoch)
+    for invalid in (None, True, forged):
+        with pytest.raises(ValueError): first.resume_connections(invalid)
+    with pytest.raises(ValueError): forged.check(first)
+    with pytest.raises(ValueError): fence.check(second)
+    with pytest.raises(ValueError): second.resume_connections(fence)
+    fence.check(first)
+    first.resume_connections(fence)
+    replacement = first.freeze_connections(0)
+    with pytest.raises(ValueError): fence.check(first)
+    with pytest.raises(ValueError): first.resume_connections(fence)
+    replacement.check(first)
+    first.resume_connections(replacement)
+    assert first.count() == second.count() == 0
+
+
+@pytest.mark.parametrize('timeout', [True, False, None, '1', -1, float('nan'), float('inf'),
+    -float('inf'), 10**1000, threading.TIMEOUT_MAX*2])
+def test_invalid_connection_freeze_timeout_does_not_close_admission(tmp_path, timeout):
+    store = TranscriptStore(tmp_path/'owned.db')
+    with pytest.raises(ValueError): store.freeze_connections(timeout)
+    assert store._connections_fence is None and store.count() == 0
+
+
+def test_connection_freeze_accepts_zero_poll_and_native_wait_limit(tmp_path):
+    store = TranscriptStore(tmp_path/'owned.db')
+    for timeout in (0.0, 1, threading.TIMEOUT_MAX):
+        fence = store.freeze_connections(timeout)
+        fence.check(store)
+        store.resume_connections(fence)
+    assert store.count() == 0
+
+
+def test_connection_fence_does_not_certify_physical_sqlite_resource_release(tmp_path):
+    store = TranscriptStore(tmp_path/'owned.db')
+    with store._connection_scope() as connection:
+        assert connection.execute('PRAGMA journal_mode=DELETE').fetchone()[0] == 'delete'
+        connection.execute('CREATE TABLE owned_cursor_rows (id INTEGER)')
+        connection.executemany('INSERT INTO owned_cursor_rows VALUES (?)', [(1,), (2,)])
+    cursor = None
+    try:
+        with store._connection_scope() as connection:
+            cursor = connection.execute('SELECT id FROM owned_cursor_rows')
+            assert cursor.fetchone()[0] == 1  # Authored private-scope escape, not a store API result.
+        fence = store.freeze_connections(0)
+        fence.check(store)
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'): connection.execute('SELECT 1')
+        with closing(sqlite3.connect(store.path, timeout=0)) as independent:
+            with pytest.raises(sqlite3.OperationalError, match='locked'):
+                independent.execute('BEGIN EXCLUSIVE')
+        # A valid operation token did not imply all sqlite3_close_v2 resources
+        # were finalized. No resource-release assertion follows fixture disposal.
+        store.resume_connections(fence)
+    finally:
+        cursor = None  # Dispose this test's authored escape only, never product proof.
 
 
 def test_transcript_round_trip(tmp_path) -> None:

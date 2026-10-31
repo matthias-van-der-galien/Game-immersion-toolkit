@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import math
 import threading
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import TextMatch, TranscriptLine, is_comic_text_id
+from .runtime_writers import RuntimeWriterGate
 
 
 SCHEMA = """
@@ -47,11 +51,28 @@ class TranscriptStorePoisonedError(RuntimeError):
         self.failure = failure
 
 
+@dataclass(frozen=True, eq=False, repr=False)
+class TranscriptConnectionFence:
+    """One store's closed operation scopes; no copy or process authority."""
+    _store: TranscriptStore
+    _epoch: int
+
+    def check(self, store):
+        if not isinstance(store, TranscriptStore) or store is not self._store:
+            raise ValueError('The transcript connection fence belongs to another store.')
+        with store._connections_lock:
+            store._check_connection_fence(self)
+
+
 class TranscriptStore:
     def __init__(self, path: Path):
         self.path = path
         self._connection_failures = []  # Failed objects only; no successful connection registry.
         self._failure_lock = threading.Lock()
+        self._connections_gate = RuntimeWriterGate()
+        self._connections_lock = threading.Lock()
+        self._connections_epoch = 0
+        self._connections_fence = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -62,11 +83,31 @@ class TranscriptStore:
 
     @contextmanager
     def _connection_scope(self):
+        self._require_connections_clean()
+        self._connections_gate.enter()
+        try:
+            self._require_connections_clean()
+            with self._admitted_connection() as connection:
+                yield connection
+        finally:
+            # Includes actual transaction exit, close, and failure publication.
+            self._connections_gate.leave()
+
+    def _require_connections_clean(self, deadline=None):
         # This lock protects failure ownership, not admission of active work.
-        with self._failure_lock:
+        if deadline is None:
+            self._failure_lock.acquire()
+        else:
+            self._acquire_connections_lock(self._failure_lock, deadline)
+        try:
             if self._connection_failures:
                 failure = self._connection_failures[0]
                 raise TranscriptStorePoisonedError(failure) from failure
+        finally:
+            self._failure_lock.release()
+
+    @contextmanager
+    def _admitted_connection(self):
         connection = self._connect()
         body_error = transaction_error = None
         try:
@@ -90,6 +131,77 @@ class TranscriptStore:
                     self._connection_failures.append(failure)
                 cause = transaction_error if transaction_error is not None else body_error if body_error is not None else close_error
                 raise failure from cause
+
+    @staticmethod
+    def _acquire_connections_lock(lock, deadline):
+        remaining = min(threading.TIMEOUT_MAX, max(0.0, deadline-time.monotonic()))
+        if not lock.acquire(timeout=remaining):
+            raise TimeoutError('Transcript connection freeze has not finished.')
+
+    def _check_connection_fence(self, fence):
+        self._require_connections_clean()
+        gate = self._connections_gate
+        with gate._condition:
+            if (type(fence) is not TranscriptConnectionFence or self._connections_fence is not fence
+                    or fence._store is not self or fence._epoch != self._connections_epoch
+                    or gate._accepting or gate._active):
+                raise ValueError('The transcript connection fence is no longer current.')
+
+    def freeze_connections(self, timeout):
+        """Close SQL admission and await real close, using one total wait budget."""
+        if type(timeout) not in {int, float}:
+            raise ValueError('Transcript connection freeze requires a finite timeout.')
+        try:
+            duration = float(timeout)
+        except OverflowError:
+            raise ValueError('Transcript connection freeze requires a finite timeout.') from None
+        if not math.isfinite(duration) or not 0 <= duration <= threading.TIMEOUT_MAX:
+            raise ValueError('Transcript connection freeze requires a finite timeout.')
+        deadline = time.monotonic()+duration
+        self._acquire_connections_lock(self._connections_lock, deadline)
+        try:
+            self._require_connections_clean(deadline)
+            gate = self._connections_gate
+            self._acquire_connections_lock(gate._condition, deadline)
+            try:
+                gate.stop_admission()
+            finally:
+                gate._condition.release()
+            while True:
+                # Condition.wait reacquires its underlying RLock without a
+                # timeout. Poll with bounded acquisition instead, so contention
+                # after admission closes still uses this same total deadline.
+                self._acquire_connections_lock(gate._condition, deadline)
+                try:
+                    if gate._accepting:
+                        raise ValueError('Transcript connection admission reopened during freeze.')
+                    if not gate._active:
+                        self._require_connections_clean(deadline)
+                        if duration and time.monotonic() > deadline:
+                            raise TimeoutError('Transcript connection freeze has not finished.')
+                        if self._connections_fence is None:
+                            self._connections_fence = TranscriptConnectionFence(self, self._connections_epoch)
+                        fence = self._connections_fence
+                        if (type(fence) is not TranscriptConnectionFence or fence._store is not self
+                                or fence._epoch != self._connections_epoch):
+                            raise ValueError('The transcript connection fence is no longer current.')
+                        return fence
+                finally:
+                    gate._condition.release()
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('Transcript connection freeze has not finished.')
+                time.sleep(min(.01, remaining))
+        finally:
+            self._connections_lock.release()
+
+    def resume_connections(self, fence):
+        """Invalidate the exact local token before admitting another operation."""
+        with self._connections_lock:
+            self._check_connection_fence(fence)
+            self._connections_fence = None
+            self._connections_epoch += 1
+            self._connections_gate.resume()
 
     def _initialize(self) -> None:
         with self._connection_scope() as connection:
