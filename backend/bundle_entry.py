@@ -25,7 +25,7 @@ def _prepare_frozen_standard_streams():
 def main(arguments=None):
     _prepare_frozen_standard_streams()
     args = list(sys.argv[1:] if arguments is None else arguments)
-    if len(args) == 2 and args[0] == '--runtime-probe' and args[1] in {'native', 'asr', 'api', 'api-wal', 'host'}:
+    if len(args) == 2 and args[0] == '--runtime-probe' and args[1] in {'native', 'asr', 'api', 'api-wal', 'api-grammar', 'host'}:
         layout = discover_layout()
         if layout.mode != 'bundle' or layout.profile != 'runtime-experiment':
             raise RuntimeBundleError('Runtime probes require the quarantined runtime-experiment profile.')

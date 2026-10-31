@@ -459,3 +459,124 @@ writer-admission or warm-routing proof. Hosted image `20261021.278.1` is Server
 evidence. Rights and ordinary-user Windows 11 acceptance remain open, production
 and target activation remain false, and no installer was built. Exact identities
 are in the [checkpoint ledger](r19-frozen-checkpoint-20261031.json).
+
+## Separate populated grammar override (C6, native pending)
+
+`authored-data-copy-grammar` adds one local grammar choice to a separate fixed
+plain-copy experiment. It preserves the C3/C4/C5 controls, schema0 pins, Chinese
+rows and favorite checks. Its source contracts use the real reading service,
+normalizer and SQLite; the local HTTP/process doubles do not establish actual
+frozen middleware or Windows ownership. A new exact-candidate native execution
+and independently reviewed receipt are required.
+
+Only this case selects the literal experimental `api-grammar` probe. The private
+selection is strict boolean, defaults false and refuses simultaneous WAL/grammar
+policies before creating a process. It retains the existing main-image/profile
+guards, frontend/API roles, detached registered creation objects, canonical
+listeners and exact synthetic marker. No production API/storage/grammar,
+settings-root mapping, migration/coordinator, Win32 primitive or spec changes.
+
+The fixed API policy delegates its constructor alias to the actual
+`LexiriseService` class for exactly the owned `data_root/lexirise` directory.
+It passes a truthy, obviously authored noncredential directly as `api_key` and
+a strict `httpx.MockTransport`. Positional/conflicting key/transport/directory
+inputs and another service construction refuse. The normal private AccountStore
+must point to the expected absent test path; an existing file is refused before
+reading its bytes. `_key` reaches the explicit constructor fixture before
+account/environment/DPAPI fallbacks. No profile is added or real key accessed.
+
+Actual account pinning, request middleware, `pin`, `reading_for`, settings
+parsing, `analyze`, `normalize_grammar` and `set_grammar_known` stay in the
+native path. The mock accepts only the fixed API host and fixture Authorization:
+settings GET and exact authored-Chinese zh/non-fast analysis POST, at most
+16 calls per process. Settings include actual effective English translation
+targets. Duplicate/malformed request fields, other bodies/paths/methods,
+dictionary fallback and remote mutations fail; there is no arbitrary200
+response. Remote-socket blocking remains enabled. Complete token glosses avoid
+unnecessary dictionary work through ordinary behavior, not a patched executor.
+The one anchored rule is an invented fixture, not linguistic analysis evidence.
+
+The actual flow is:
+
+1. Start the normal registered cohort after explicitly closed parent setup;
+   perform the real favorite PATCH as before.
+2. Read the first row's reading API: one exact rule at proficiency0 with
+   localOverride=false. POST the fixed absent slug and require actual404
+   through the same retained listener scope; read again at0/false.
+3. POST the valid fixture slug with strict known=true and the existing companion
+   and legacy-account headers. Require the actual local setter acknowledgment
+   and a new GET at4/localOverride=true, preserving the exact Chinese anchor.
+4. Observe the extra `grammar-written` handshake/source-entry contender, then
+   perform actual strict C2/status503/health and retained writer signaling
+   before the same typed barrier and continuous coordinator leases.
+5. Copy through the unchanged helper. In a separate read-only semantic copy of
+   reading-cache-v2.db, require exactly one grammar_choices row: the privately
+   derived fixture account/language/slug key with integer4. No grammar SQL seed,
+   schema export/change, source SQLite-open or staging SQLite-open is used.
+6. Recheck original/snapshot bytes, pointer and current authority. Start the
+   fresh source cohort/new generation, refuse the stale barrier and read the
+   same rule at4/true again. The mock always reports remote proficiency0;
+   persistent local choice readback, not a changed remote result, explains4.
+7. Final strict drain, four retained writer signals across two source cohorts,
+   explicit lease release and successful private cleanup precede publication.
+
+Before the grammar-written ACK, C6 retains the actual existing coordinator,
+opaque owner/current/owned runtime objects, generation1, pre-drain barrierNone
+and both held lease objects, then rechecks them afterward. It also checks the
+known immutable authored-payload.bin bytes through raw root-first guards and a
+bounded read. This is the fixed fixture input, not a database snapshot or a new
+writer-stop token. A changed/unreadable payload or changed owner/current/owned,
+generation, barrier or lease identity poisons and holds before copy/restart.
+For cohort1, the adapter also invokes the same fixed private owner check after
+each strict-drain-complete and writers-signaled ACK, before returning its stop
+proof. Both require the captured pre-drain barrier to remainNone until the
+existing coordinator mints its actual typed barrier. At writers-signaled the
+adapter is legitimately inactive and all retained child flags have already
+passed; the check does not restore active state or manufacture another proof.
+An injected barrier cannot be hidden by the coordinator overwriting it after
+quiesce. These callbacks add no protocol phase/count and do not run in the
+generation2 final drain.
+The same payload and pinned owner/lease identities are checked directly after
+actual C2/signals and in later source-authority checks, so drain-window changes
+cannot become a new accepted first inventory. Actual SQLite bytes may change
+legitimately until strict drain; no database hash, parent SQL connection or
+whole-source inventory is captured before the existing typed barrier.
+
+The reading analyzer writes derived cache rows normally; they do not substitute
+for the exact durable grammar row. A wrong account/language scope cannot supply
+that override. No credential/profile continuity, remote grammar write, target
+activation or WAL persistence is claimed by this ordinary-connection case.
+
+C6 inherits C5's conservative core-helper exception retention and poisoned
+living-owner hold, including a core integrity-copy close failure despite
+matching source bytes. Its additional semantic copies retain their exact
+connection/root on uncertain close/removal. There is no traceback inspection,
+serialization, stale-handle retry or claim that the core already-deleted temp
+directory survives. Source/barrier/generation change and broken control or
+failure output cannot release exclusion or start a fresh cohort. C3/C4/C5
+failure semantics remain unchanged.
+
+The distinct schemas are `proxy-r19-frozen-data-copy-grammar-probe-v1` and
+`proxy-r19-frozen-data-copy-grammar-receipt-v1`, scoped to
+`authored-populated-local-grammar-copy-with-living-coordinator`. The finite
+metadata reports the0→4/copied4/restarted4 outcomes, unknown-rule404, rowcount1,
+fixed mock/credential-fixture labels and ten source-operation blocks. It omits
+keys and their hashes, scoped row keys, grammar slugs/text, database/cache
+contents, paths, handles and raw HTTP/errors. Existing byte bounds and cleanup
+ordering remain in force. The extra case does not close global/dynamic writers,
+keeper death, warm routing, other ledgers/export work, settings/browser
+continuity, rights or ordinary Windows11. Production/target/R19 stay false;
+PR #59 stays intact and no installer is built.
+
+After candidate verification, its separate build-host invocation is:
+
+```powershell
+pwsh -NoProfile -File scripts/probe-frozen-data-copy.ps1 `
+  -RuntimeRoot <extracted-runtime> -Provenance <candidate-json> `
+  -ProbeCase authored-data-copy-grammar `
+  -Output output/checks/r19-frozen-data-copy-grammar.json
+```
+
+That distinct grammar basename is also the case's default output. Workflow
+integration and its exact metadata allowlist remain separate; source-only
+results and retained earlier artifacts do not establish a native C6 pass.

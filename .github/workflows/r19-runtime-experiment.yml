@@ -351,6 +351,22 @@ jobs:
           path: output/checks/r19-frozen-data-copy-wal.json
           if-no-files-found: ignore
           retention-days: 7
+      - name: Preserve one authored local grammar override through a stopped copy
+        # Actual local API/store semantics with a fixed mocked analysis service.
+        # A living owner holds uncertain cleanup; timeout is a failed experiment.
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $relocated = Join-Path $env:RUNNER_TEMP 'R19 integrated space 漢字/Runtime'
+          ./scripts/probe-frozen-data-copy.ps1 -RuntimeRoot $relocated -Provenance (Join-Path $env:GITHUB_WORKSPACE 'output/runtime-bundle/quarantine/CANDIDATE-PROVENANCE.json') -ProbeCase authored-data-copy-grammar -Output (Join-Path $env:GITHUB_WORKSPACE 'output/checks/r19-frozen-data-copy-grammar.json')
+      - name: Retain only sanitized authored grammar-copy failure observations
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: r19-frozen-data-copy-grammar-failure-observations
+          path: output/checks/r19-frozen-data-copy-grammar.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Retain only sanitized native collection refusal
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
@@ -396,6 +412,7 @@ jobs:
             output/checks/r19-frozen-data-copy.json
             output/checks/r19-frozen-data-copy-resume.json
             output/checks/r19-frozen-data-copy-wal.json
+            output/checks/r19-frozen-data-copy-grammar.json
             output/runtime-bundle/build-check.json
             output/runtime-bundle/quarantine/RUNTIME-INVENTORY.json
             output/runtime-bundle/quarantine/NATIVE-COLLECTION-INPUTS.json

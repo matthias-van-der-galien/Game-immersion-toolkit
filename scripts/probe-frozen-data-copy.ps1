@@ -1,14 +1,17 @@
 param([Parameter(Mandatory=$true)][string]$RuntimeRoot,
       [Parameter(Mandatory=$true)][string]$Provenance,
-      [ValidateSet('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal')][string]$ProbeCase='authored-data-copy',
+      [ValidateSet('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal','authored-data-copy-grammar')][string]$ProbeCase='authored-data-copy',
       [string]$Output=(Join-Path $PSScriptRoot '../output/checks/r19-frozen-data-copy.json'))
 $ErrorActionPreference='Stop'
-if ($ProbeCase -cnotin @('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal')) { throw 'Unknown fixed authored data-copy case.' }
+if ($ProbeCase -cnotin @('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal','authored-data-copy-grammar')) { throw 'Unknown fixed authored data-copy case.' }
 if ($ProbeCase -ceq 'authored-data-copy-resume' -and -not $PSBoundParameters.ContainsKey('Output')) {
     $Output=Join-Path $PSScriptRoot '../output/checks/r19-frozen-data-copy-resume.json'
 }
 if ($ProbeCase -ceq 'authored-data-copy-wal' -and -not $PSBoundParameters.ContainsKey('Output')) {
     $Output=Join-Path $PSScriptRoot '../output/checks/r19-frozen-data-copy-wal.json'
+}
+if ($ProbeCase -ceq 'authored-data-copy-grammar' -and -not $PSBoundParameters.ContainsKey('Output')) {
+    $Output=Join-Path $PSScriptRoot '../output/checks/r19-frozen-data-copy-grammar.json'
 }
 Remove-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue
 if ($PSVersionTable.PSEdition -ne 'Core' -or -not $IsWindows) { throw 'The authored data-copy harness requires Windows PowerShell 7 on the build host.' }
@@ -100,7 +103,7 @@ function Read-DataCopyControlLine($Reader, [int]$TimeoutMilliseconds=120000, [bo
     }
 }
 
-function Get-DataCopyRoots([string]$TemporaryRoot, [ValidateSet('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal')][string]$Case='authored-data-copy') {
+function Get-DataCopyRoots([string]$TemporaryRoot, [ValidateSet('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal','authored-data-copy-grammar')][string]$Case='authored-data-copy') {
     $private=Join-Path (Join-Path $TemporaryRoot 'empty-host') $Case
     return @{PROXY_TRANSCRIPT_SETTINGS_ROOT=$private;PROXY_TRANSCRIPT_DATA_ROOT=(Join-Path $private 'data-v1');
         PROXY_TRANSCRIPT_CACHE_ROOT=(Join-Path $private 'cache-v1');PROXY_TRANSCRIPT_WORK_ROOT=(Join-Path $private 'cache-v1/work');
@@ -121,11 +124,13 @@ function Assert-DataCopyLeases([ValidateSet('open','blocked')][string]$Expected)
     if ($Expected -eq 'blocked') { $script:sourceBlocks++ }
 }
 function Read-DataCopyEvent([string]$Phase) {
-    if ($script:ProbeCase -cnotin @('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal')) { throw 'Unknown fixed authored data-copy case.' }
+    if ($script:ProbeCase -cnotin @('authored-data-copy','authored-data-copy-resume','authored-data-copy-wal','authored-data-copy-grammar')) { throw 'Unknown fixed authored data-copy case.' }
     $resumeCase=$script:ProbeCase -ceq 'authored-data-copy-resume'
     $walCase=$script:ProbeCase -ceq 'authored-data-copy-wal'
+    $grammarCase=$script:ProbeCase -ceq 'authored-data-copy-grammar'
     if ($Phase -ceq 'copy-interrupted' -and -not $resumeCase) { throw 'Only the fixed resume case can observe an interruption.' }
     if ($Phase -ceq 'wal-set-observed' -and -not $walCase) { throw 'Only the fixed WAL case can observe a retained WAL set.' }
+    if ($Phase -ceq 'grammar-written' -and -not $grammarCase) { throw 'Only the fixed grammar case can observe a populated override.' }
     $line=Read-DataCopyControlLine $script:controlReader
     if (-not $line) { throw 'Authored data-copy event is unavailable.' }
     $value=$line | ConvertFrom-Json
@@ -138,7 +143,9 @@ function Read-DataCopyEvent([string]$Phase) {
         'partial_revalidations','same_plan_barrier_generation','copy_resumed') }
     if ($walCase) { $keys+=@('scope','sqlite_policy','sqlite_version','sqlite_version_scope',
         'transcript_wal_bytes','transcript_shm_bytes','wal_set','wal_dependency') }
-    $schema=if ($walCase) {'proxy-r19-frozen-data-copy-wal-probe-v1'} elseif ($resumeCase) {'proxy-r19-frozen-data-copy-resume-probe-v1'} else {'proxy-r19-frozen-data-copy-probe-v1'}
+    if ($grammarCase) { $keys+=@('scope','reading_transport','grammar_credential_fixture','grammar_baseline',
+        'unknown_grammar_rule','grammar_written','grammar_snapshot','grammar_restarted','grammar_override_rows') }
+    $schema=if ($grammarCase) {'proxy-r19-frozen-data-copy-grammar-probe-v1'} elseif ($walCase) {'proxy-r19-frozen-data-copy-wal-probe-v1'} elseif ($resumeCase) {'proxy-r19-frozen-data-copy-resume-probe-v1'} else {'proxy-r19-frozen-data-copy-probe-v1'}
     if ($null -eq $value -or @(Compare-Object $keys @($value.PSObject.Properties.Name) -CaseSensitive).Count -or
         $value.schema -cne $schema -or $value.kind -cne 'data-copy' -or
         $value.case -cne $script:ProbeCase -or $value.source_commit -cne $proof.source_commit -or
@@ -199,12 +206,29 @@ function Read-DataCopyEvent([string]$Phase) {
             }
         }
     }
+    if ($grammarCase) {
+        foreach ($name in @('scope','reading_transport','grammar_credential_fixture','grammar_baseline',
+            'unknown_grammar_rule','grammar_written','grammar_snapshot','grammar_restarted')) {
+            if ($value.$name -isnot [string]) { throw 'Authored grammar string is unavailable.' }
+        }
+        if ($value.scope -cne 'authored-populated-local-grammar-copy-with-living-coordinator' -or
+            $value.reading_transport -cne 'fixed-mock-settings-analysis-only' -or
+            $value.grammar_credential_fixture -cne 'in-memory-noncredential' -or
+            $value.grammar_baseline -cnotin @('not-run','zero-without-local-override') -or
+            $value.unknown_grammar_rule -cnotin @('not-run','rejected-404') -or
+            $value.grammar_written -cnotin @('not-run','four-with-local-override') -or
+            $value.grammar_snapshot -cnotin @('not-run','one-scoped-choice-four') -or
+            $value.grammar_restarted -cnotin @('not-run','four-with-local-override') -or
+            ($value.grammar_override_rows -isnot [int] -and $value.grammar_override_rows -isnot [long]) -or
+            $value.grammar_override_rows -lt 0 -or $value.grammar_override_rows -gt 1) { throw 'Authored grammar scope differs.' }
+    }
     $failures=@('fixture-unavailable','setup-close-unconfirmed','setup-still-open','cohort-unconfirmed',
         'owned-host-unconfirmed','copy-refused','copy-result-unconfirmed','schema-unconfirmed','authored-rows-differ',
         'pointer-changed','source-changed','control-unavailable','control-invalid','lease-release-unconfirmed',
         'interrupted-copy-unconfirmed','unexpected-data-copy-failure')
     if ($walCase) { $failures+=@('wal-set-unavailable','wal-dependency-unconfirmed',
         'wal-verification-cleanup-unconfirmed','sqlite-version-unavailable') }
+    if ($grammarCase) { $failures+=@('grammar-choice-unconfirmed','wal-verification-cleanup-unconfirmed') }
     if ($value.phase -ceq 'recovery-required' -and $value.status -ceq 'failed' -and $value.failure -cin $failures) {
         $script:failureCategory=$value.failure
         throw 'Authored data-copy owner requires recovery.'
@@ -213,6 +237,7 @@ function Read-DataCopyEvent([string]$Phase) {
     $expected=switch ($Phase) {
         'setup-closed' { @(0,0,0,0,0) }
         'favorite-written' { @(1,2,2,0,0) }
+        'grammar-written' { @(1,2,2,0,0) }
         'strict-drain-complete' { @(1,2,2,0,1) }
         'writers-signaled' { @(1,2,2,2,1) }
         'wal-set-observed' { @(1,2,2,2,1) }
@@ -255,12 +280,22 @@ function Read-DataCopyEvent([string]$Phase) {
             (-not $walObserved -and ($value.transcript_wal_bytes -ne 0 -or $value.transcript_shm_bytes -ne 0)) -or
             ($verified -and ($value.wal_files -lt 1 -or $value.shm_files -lt 1))) { throw 'Authored WAL verification order differs.' }
     }
+    if ($grammarCase) {
+        $written=$Phase -cnotin @('setup-closed','favorite-written')
+        if ($value.grammar_baseline -cne $(if ($written) {'zero-without-local-override'} else {'not-run'}) -or
+            $value.unknown_grammar_rule -cne $(if ($written) {'rejected-404'} else {'not-run'}) -or
+            $value.grammar_written -cne $(if ($written) {'four-with-local-override'} else {'not-run'}) -or
+            $value.grammar_snapshot -cne $(if ($verified) {'one-scoped-choice-four'} else {'not-run'}) -or
+            $value.grammar_restarted -cne $(if ($resumed) {'four-with-local-override'} else {'not-run'}) -or
+            $value.grammar_override_rows -ne [int]$verified) { throw 'Authored grammar verification order differs.' }
+    }
     if ($Phase -eq 'released') {
         $script:walFiles=$value.wal_files; $script:shmFiles=$value.shm_files
         if ($walCase) {
             $script:sqliteVersion=$value.sqlite_version
             $script:transcriptWalBytes=$value.transcript_wal_bytes; $script:transcriptShmBytes=$value.transcript_shm_bytes
         }
+        if ($grammarCase) { $script:grammarRows=$value.grammar_override_rows; $script:grammarVerified=$true }
     }
 }
 function Write-DataCopyReceipt([string]$Status) {
@@ -320,6 +355,24 @@ function Write-DataCopyReceipt([string]$Status) {
         $receipt['wal_set']=$(if ($Status -ceq 'passed') {'nonempty-after-retained-signals'} else {'not-approved'})
         $receipt['wal_dependency']=$(if ($Status -ceq 'passed') {'main-only-false-full-set-true'} else {'not-approved'})
     }
+    if ($script:ProbeCase -ceq 'authored-data-copy-grammar') {
+        if ($Status -ceq 'passed' -and (($sourceBlocks -isnot [int] -and $sourceBlocks -isnot [long]) -or
+            $sourceBlocks -ne 10 -or ($grammarRows -isnot [int] -and $grammarRows -isnot [long]) -or
+            $grammarRows -ne 1 -or $grammarVerified -isnot [bool] -or -not $grammarVerified)) {
+            throw 'Authored grammar receipt proof is incomplete.'
+        }
+        $receipt.schema='proxy-r19-frozen-data-copy-grammar-receipt-v1'
+        $receipt.case='authored-data-copy-grammar'
+        $receipt.scope='authored-populated-local-grammar-copy-with-living-coordinator'
+        $receipt['reading_transport']='fixed-mock-settings-analysis-only'
+        $receipt['grammar_credential_fixture']='in-memory-noncredential'
+        $receipt['grammar_baseline']=$(if ($Status -ceq 'passed') {'zero-without-local-override'} else {'not-approved'})
+        $receipt['unknown_grammar_rule']=$(if ($Status -ceq 'passed') {'rejected-404'} else {'not-approved'})
+        $receipt['grammar_written']=$(if ($Status -ceq 'passed') {'four-with-local-override'} else {'not-approved'})
+        $receipt['grammar_snapshot']=$(if ($Status -ceq 'passed') {'one-scoped-choice-four'} else {'not-approved'})
+        $receipt['grammar_restarted']=$(if ($Status -ceq 'passed') {'four-with-local-override'} else {'not-approved'})
+        $receipt['grammar_override_rows']=$(if ($Status -ceq 'passed') {$grammarRows} else {0})
+    }
     New-Item -ItemType Directory -Path (Split-Path $Output) -Force | Out-Null
     $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8NoBOM
 }
@@ -350,6 +403,7 @@ $temporary=Join-Path ([IO.Path]::GetTempPath()) ('R19 data copy space 漢字 '+[
 $owned=[Collections.Generic.List[Diagnostics.Process]]::new();$controlReader=$null;$stderrDiscard=$null
 $ownerExitConfirmed=$false;$sourceBlocks=0;$walFiles=0;$shmFiles=0;$stage='prepare';$failureCategory='harness-unconfirmed';$failed=$false
 $sqliteVersion='';$transcriptWalBytes=0;$transcriptShmBytes=0
+$grammarRows=0;$grammarVerified=$false
 $roots=Get-DataCopyRoots $temporary $ProbeCase
 New-Item -ItemType Directory -Path (Join-Path $temporary 'empty-host'),$roots.PROXY_TRANSCRIPT_STATE_ROOT -Force | Out-Null
 @{build_id=$proof.build_id;synthetic=$true} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $roots.PROXY_TRANSCRIPT_STATE_ROOT 'synthetic-probe.json') -Encoding utf8NoBOM
@@ -359,7 +413,9 @@ $leasePaths=@((Join-Path $legacyRoot 'data/companion-operation.lock'),(Join-Path
 try {
     Assert-DataCopyPortsFree
     $process=Start-DataCopyOwner
-    $phases=@('setup-closed','favorite-written','strict-drain-complete','writers-signaled')
+    $phases=@('setup-closed','favorite-written')
+    if ($ProbeCase -ceq 'authored-data-copy-grammar') { $phases+=@('grammar-written') }
+    $phases+=@('strict-drain-complete','writers-signaled')
     if ($ProbeCase -ceq 'authored-data-copy-wal') { $phases+=@('wal-set-observed') }
     $phases+=@('copy-progress')
     if ($ProbeCase -ceq 'authored-data-copy-resume') { $phases+=@('copy-interrupted') }

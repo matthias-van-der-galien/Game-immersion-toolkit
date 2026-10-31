@@ -13,11 +13,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import httpx
 
 from backend import runtime_data_copy_probe as probe
 from backend import runtime_probe
 from backend.bundle_host import HostProbeError
 from backend.lexirise import LexiriseService
+from backend.accounts import AccountStore
+from backend.lexirise_settings import account_settings
+from backend.languages import translation_language
 from backend.reading import LexiriseReadingService
 from backend.runtime_bundle import RuntimeLayout
 
@@ -40,10 +44,13 @@ def fixture(tmp_path, monkeypatch):
             self.registered = {}
             self.closed = self.recovery_required = False
             self.tree = object()
-        def start_registered(self, *, detached_console, wal_probe=False):
+        def start_registered(self, *, detached_console, wal_probe=False, grammar_probe=False):
             assert detached_console is True
             assert type(wal_probe) is bool
+            assert type(grammar_probe) is bool and not (wal_probe and grammar_probe)
             self.wal_probe = wal_probe
+            self.grammar_probe = grammar_probe
+            self.readers = {}
             calls.append(('create', self))
             self.registered = {role: SimpleNamespace(created=True, resumed=False, exited=False, closed=False)
                                for role in ('frontend', 'api')}
@@ -55,7 +62,12 @@ def fixture(tmp_path, monkeypatch):
                     for connection in connections: connection.close()
                 self.exports = LexiriseService(self.layout.data_root/'lexirise')
                 self.reading = LexiriseReadingService(self.layout.data_root/'lexirise', self.exports)
-            if wal_probe:
+            if grammar_probe:
+                self.grammar_policy = runtime_probe._AuthoredGrammarService(self.layout, LexiriseService)
+                self.exports = self.grammar_policy.create(self.layout.data_root/'lexirise',
+                    accounts=AccountStore(self.layout.work_root/'absent-test-account.dpapi'))
+                self.reading = LexiriseReadingService(self.layout.data_root/'lexirise', self.exports)
+            elif wal_probe:
                 with runtime_probe._authored_wal_connections(self.layout) as policy:
                     initialize()
                     policy.require_stores()
@@ -76,6 +88,16 @@ def fixture(tmp_path, monkeypatch):
         def quiesce_registered(self):
             calls.append(('strict-c2-double', self))
             self.reading.quiesce(1)
+            for reader in self.readers.values(): reader.quiesce(1)
+        def reader(self, line):
+            session = self.exports.pin(line.source_language)
+            if not hasattr(session, '_settings_payload'): account_settings(session)
+            target = translation_language(session._settings_payload, line.source_language)
+            key = (session._scope(), line.source_language, target, session._settings_scope)
+            if key not in self.readers:
+                self.readers[key] = LexiriseReadingService(self.layout.data_root/'lexirise', session,
+                    source_language=line.source_language, translation_language=target)
+            return self.readers[key]
         def close(self):
             calls.append(('retained-signal-double', self))
             for child in self.registered.values(): child.exited = child.closed = True
@@ -83,7 +105,7 @@ def fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(probe, 'FrozenProbeHost', FakeHost)
     instances = []
     def make(case=probe.CASE):
-        phases = probe.WAL_PHASES if case == probe.WAL_CASE else probe.RESUME_PHASES if case == probe.RESUME_CASE else probe.PHASES
+        phases = probe.GRAMMAR_PHASES if case == probe.GRAMMAR_CASE else probe.WAL_PHASES if case == probe.WAL_CASE else probe.RESUME_PHASES if case == probe.RESUME_CASE else probe.PHASES
         stream = io.StringIO(''.join('observed '+phase+'\n' for phase in phases[:-1]))
         value = probe._DataCopyProbe(layout, stream, case=case)
         instances.append(value)
@@ -100,10 +122,28 @@ def fixture(tmp_path, monkeypatch):
         try:
             store = probe._SetupStore(value.adapter.layout.data_root/'transcript-v2.db', connections)
             if isinstance(request, probe.Request):
-                assert request.get_method() == 'PATCH' and request.data == b'{"favorite":true}'
-                assert request.full_url.endswith('/1/favorite')
-                result = store.set_favorite(1, True).model_dump(mode='json')
-                calls.append(('favorite-sql', value.adapter.host))
+                if request.get_method() == 'PATCH':
+                    assert request.data == b'{"favorite":true}' and request.full_url.endswith('/1/favorite')
+                    result = store.set_favorite(1, True).model_dump(mode='json')
+                    calls.append(('favorite-sql', value.adapter.host))
+                else:
+                    assert value.case == probe.GRAMMAR_CASE
+                    assert request.get_header('X-proxy-transcript-account') == 'legacy'
+                    line = store.get(1)
+                    reader = value.adapter.host.reader(line)
+                    if request.get_method() == 'GET':
+                        assert request.full_url.endswith('/1/reading')
+                        result = reader.analyze(line.source_text)
+                    else:
+                        assert request.get_method() == 'POST' and request.full_url.endswith('/1/reading/grammar')
+                        assert request.get_header('X-proxy-transcript') == 'lexirise'
+                        body = json.loads(request.data)
+                        assert set(body) == {'slug', 'known'} and body['known'] is True
+                        result = reader.set_grammar_known(line.source_text, body['slug'], body['known'])
+                        calls.append(('grammar-sql' if result else 'grammar-404', value.adapter.host))
+                        if result is None:
+                            raise probe.HTTPError(request.full_url, 404, 'authored missing grammar', {},
+                                io.BytesIO(b'{"detail":"Grammar rule not found in this line"}'))
             else:
                 assert request == 'http://127.0.0.1:8766/api/lines?game=hito'
                 result = [row.model_dump(mode='json') for row in store.list()]
@@ -149,6 +189,421 @@ def test_actual_sql_copy_and_chinese_context_with_fresh_cohort_order(fixture, ca
     assert all(event['r19_complete'] is False and event['target_activation'] is False for event in events)
     assert all(event['schema'] == probe.SCHEMA and event['case'] == probe.CASE for event in events)
     assert not ({'scope', 'copy_attempts', 'authored_interruptions', 'partial_revalidations'} & set(events[-1]))
+
+
+def test_populated_grammar_uses_real_setter_copy_and_fresh_source_readback(fixture, monkeypatch, capsys):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    choices = []
+    verify = probe._verify_store
+    def semantic(connection, name, expected, **options):
+        verify(connection, name, expected, **options)
+        if options.get('grammar_probe') and name == 'data/lexirise/reading-cache-v2.db':
+            choices.append([tuple(row) for row in connection.execute('SELECT slug,proficiency FROM grammar_choices')])
+    monkeypatch.setattr(probe, '_verify_store', semantic)
+    assert value.run() == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert tuple(event['phase'] for event in events) == probe.GRAMMAR_PHASES
+    assert choices == [[(runtime_probe.GRAMMAR_CHOICE_KEY, 4)]]
+    assert all(event['schema'] == probe.GRAMMAR_SCHEMA and event['case'] == probe.GRAMMAR_CASE for event in events)
+    written = next(event for event in events if event['phase'] == 'grammar-written')
+    assert written['grammar_baseline'] == 'zero-without-local-override' and written['unknown_grammar_rule'] == 'rejected-404'
+    assert written['grammar_written'] == 'four-with-local-override' and written['grammar_snapshot'] == 'not-run'
+    assert written['writers_signaled'] == 0 and written['grammar_override_rows'] == 0
+    final = events[-1]
+    assert final['grammar_snapshot'] == 'one-scoped-choice-four' and final['grammar_override_rows'] == 1
+    assert final['grammar_restarted'] == 'four-with-local-override' and final['writers_signaled'] == 4
+    assert final['generation'] == 2 and value.copy_attempts == 1 and value.released
+    assert final['source_bytes'] == 'preserved-before-resume' and final['source_logical'] == 'passed'
+    assert value.coordinator.pointer_path.read_bytes() == value.pointer and not value.verification_ownership
+    assert all(host.grammar_probe and not host.wal_probe for host in value.adapter.cohorts)
+    calls = [name for name, _ in fixture.calls]
+    assert calls.count('grammar-sql') == calls.count('grammar-404') == 1
+    assert calls.index('grammar-sql') < calls.index('strict-c2-double') < calls.index('retained-signal-double')
+    assert all(0 < host.grammar_policy.calls <= 16 for host in value.adapter.cohorts)
+    text = json.dumps(events, ensure_ascii=False)
+    assert all(private not in text for private in (runtime_probe.GRAMMAR_KEY, runtime_probe.GRAMMAR_CHOICE_KEY,
+        runtime_probe.GRAMMAR_SLUG, probe.GRAMMAR_TEXT, str(value.source.path)))
+    assert not ({'sqlite_policy','transcript_wal_bytes','copy_resumed'} & set(final))
+    assert final['r19_complete'] is False and final['target_activation'] is False and final['production_activation'] is False
+
+
+def _grammar_service(value):
+    layout = value.adapter.layout
+    policy = runtime_probe._AuthoredGrammarService(layout, LexiriseService)
+    accounts = AccountStore(layout.work_root/'absent-test-account.dpapi')
+    service = policy.create(layout.data_root/'lexirise', accounts=accounts)
+    return policy, service, accounts
+
+
+def test_grammar_constructor_fixture_avoids_account_environment_and_dpapi_fallbacks(fixture, monkeypatch):
+    from backend import lexirise
+    value = fixture.make(); value.prepare()
+    def unavailable(*_a, **_k): pytest.fail('A real credential fallback must never be reached.')
+    monkeypatch.setattr(AccountStore, 'active_key', unavailable)
+    monkeypatch.setattr(lexirise, '_protect', unavailable)
+    environment = lexirise.os.environ.get
+    def forbidden(name, *args):
+        if name in {'LEXIRISE_API_KEY','LOCALAPPDATA'}: unavailable()
+        return environment(name, *args)
+    monkeypatch.setattr(lexirise.os.environ, 'get', forbidden)
+    policy, service, accounts = _grammar_service(value)
+    assert type(service) is LexiriseService and service._key() == runtime_probe.GRAMMAR_KEY
+    assert not accounts.path.exists()
+    session = service.pin('zh')
+    settings = account_settings(session)
+    assert translation_language(settings, 'zh') == 'en'
+    reader = LexiriseReadingService(value.adapter.layout.data_root/'lexirise', session)
+    try:
+        assert reader.set_grammar_known(probe.GRAMMAR_TEXT, runtime_probe.GRAMMAR_SLUG, True) == {
+            'slug': runtime_probe.GRAMMAR_SLUG, 'proficiency': 4, 'localOverride': True}
+        assert reader.analyze(probe.GRAMMAR_TEXT)['grammar'][0]['localOverride'] is True
+    finally: reader.quiesce(1)
+    assert policy.calls == 2  # Settings GET and analysis POST; no remote mutation.
+
+
+def test_grammar_existing_account_fixture_is_refused_before_any_protected_read(fixture,monkeypatch):
+    value = fixture.make(); value.prepare()
+    layout = value.adapter.layout
+    accounts = AccountStore(layout.work_root/'absent-test-account.dpapi')
+    accounts.path.parent.mkdir(parents=True)
+    accounts.path.write_bytes(b'authored placeholder, not protected user data')
+    policy = runtime_probe._AuthoredGrammarService(layout,LexiriseService)
+    opened = Path.open
+    def refuse(path,*args,**options):
+        assert path != accounts.path, 'Existing account bytes must remain unread.'
+        return opened(path,*args,**options)
+    monkeypatch.setattr(Path,'open',refuse)
+    with pytest.raises(runtime_probe.RuntimeBundleError,match='fixture must be absent'):
+        policy.create(layout.data_root/'lexirise',accounts=accounts)
+    assert not policy.constructed
+
+
+@pytest.mark.parametrize('fault', ['key','transport','foreign','relative','uri','positional','account-path'])
+def test_grammar_factory_refuses_conflicting_or_foreign_inputs_before_constructor(fixture, monkeypatch, fault):
+    value = fixture.make(); value.prepare()
+    layout = value.adapter.layout
+    def constructor(*_a, **_k): pytest.fail('Unselected service must not be constructed.')
+    policy = runtime_probe._AuthoredGrammarService(layout, constructor)
+    directory, args = layout.data_root/'lexirise', ()
+    options = {'accounts': AccountStore(layout.work_root/'absent-test-account.dpapi')}
+    if fault == 'key': options['api_key'] = runtime_probe.GRAMMAR_KEY
+    if fault == 'transport': options['transport'] = policy.transport
+    if fault == 'foreign': directory = value.fixture/'outside-lexirise'
+    if fault == 'relative': directory = 'lexirise'
+    if fault == 'uri': directory = directory.as_uri()
+    if fault == 'positional': args = ('unexpected',)
+    if fault == 'account-path': options['accounts'] = AccountStore(value.fixture/'outside.dpapi')
+    monkeypatch.setattr(policy, 'guard', lambda *_a, **_k: pytest.fail('Foreign selection cannot inspect metadata.'))
+    with pytest.raises(runtime_probe.RuntimeBundleError): policy.create(directory, *args, **options)
+    assert not policy.constructed
+
+
+@pytest.mark.parametrize('method,path,payload', [
+    ('PATCH','/v1/settings',{}), ('POST','/v1/me',{}), ('GET','/v1/decks',None),
+    ('POST','/v1/dictionary/lookup',{'text':'这'}),
+    ('POST','/v1/analyze/text',{'text':'other','language':'zh','fast':False}),
+    ('POST','/v1/analyze/text',{'text':probe.GRAMMAR_TEXT,'language':'en','fast':False}),
+    ('POST','/v1/analyze/text',{'text':probe.GRAMMAR_TEXT,'language':'zh','fast':0})])
+def test_grammar_transport_has_no_remote_success_fallback(fixture, method, path, payload):
+    value = fixture.make(); value.prepare()
+    policy, _service, _accounts = _grammar_service(value)
+    request = httpx.Request(method, 'https://api.lexirise.app'+path, json=payload,
+                            headers={'Authorization': 'Bearer '+runtime_probe.GRAMMAR_KEY})
+    with pytest.raises(runtime_probe.RuntimeBundleError): policy.reply(request)
+
+
+def test_grammar_transport_identity_duplicates_and_bound_are_explicit(fixture):
+    value = fixture.make(); value.prepare()
+    policy, _service, _accounts = _grammar_service(value)
+    for url, key in [('https://foreign.example/v1/settings',runtime_probe.GRAMMAR_KEY),
+                     ('https://api.lexirise.app/v1/settings?other=1',runtime_probe.GRAMMAR_KEY),
+                     ('https://api.lexirise.app/v1/settings','other-fixture')]:
+        with pytest.raises(runtime_probe.RuntimeBundleError):
+            policy.reply(httpx.Request('GET',url,headers={'Authorization':'Bearer '+key}))
+    headers={'Authorization':'Bearer '+runtime_probe.GRAMMAR_KEY}
+    with pytest.raises(runtime_probe.RuntimeBundleError):
+        policy.reply(httpx.Request('POST','https://api.lexirise.app/v1/analyze/text',headers=headers,
+            content=b'{"text":"a","text":"b","language":"zh","fast":false}'))
+    request = httpx.Request('GET','https://api.lexirise.app/v1/settings',headers=headers)
+    for _ in range(12): assert policy.reply(request).status_code == 200
+    with pytest.raises(runtime_probe.RuntimeBundleError, match='transport bound'): policy.reply(request)
+
+
+def test_grammar_scope_and_actual_zero_choice_cannot_pass_copy_semantics(fixture):
+    value = fixture.make(); value.prepare()
+    policy, service, _accounts = _grammar_service(value)
+    directory = value.adapter.layout.data_root/'lexirise'
+    reader = LexiriseReadingService(directory, service)
+    try:
+        reader.set_grammar_known(probe.GRAMMAR_TEXT, runtime_probe.GRAMMAR_SLUG, False)
+    finally: reader.quiesce(1)
+    copy = value.target.path/'private-reading.db'; shutil.copy2(reader.path, copy)
+    with closing(sqlite3.connect(copy.as_uri()+'?mode=ro',uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        with pytest.raises(probe.DataCopyFailure, match='grammar-choice-unconfirmed'):
+            probe._verify_store(connection,'data/lexirise/reading-cache-v2.db',[],grammar_probe=True)
+    selected = LexiriseReadingService(directory, service)
+    try: selected.set_grammar_known(probe.GRAMMAR_TEXT, runtime_probe.GRAMMAR_SLUG, True)
+    finally: selected.quiesce(1)
+    other = LexiriseService(directory, api_key='other-fixture-not-a-credential',
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200,json={
+            'occurrences':[{'charStart':0,'charEnd':1,'word':'这','isWordLike':False}],
+            'grammar':[{'slug':runtime_probe.GRAMMAR_SLUG,'indices':[0]}],
+            'grammarStates':{runtime_probe.GRAMMAR_SLUG:0}})))
+    scoped = LexiriseReadingService(directory, other)
+    try:
+        rule = scoped.analyze(probe.GRAMMAR_TEXT)['grammar'][0]
+        assert rule['proficiency'] == 0 and rule['localOverride'] is False
+    finally: scoped.quiesce(1)
+
+
+@pytest.mark.parametrize('fault', ['success','wrong-status','wrong-detail'])
+def test_grammar_negative_http_must_be_the_fixed_owned_404(fixture, monkeypatch, fault):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    urlopen = probe.urlopen
+    def request(current, **options):
+        if isinstance(current, probe.Request) and current.data and runtime_probe.GRAMMAR_ABSENT_SLUG.encode() in current.data:
+            if fault == 'success':
+                class Response:
+                    status = 200
+                    def __enter__(self): return self
+                    def __exit__(self,*_): pass
+                    def read(self,_): return b'{}'
+                return Response()
+            raise probe.HTTPError(current.full_url, 403 if fault == 'wrong-status' else 404,
+                'authored different response', {}, io.BytesIO(b'{"detail":"different fixture"}'))
+        return urlopen(current, **options)
+    monkeypatch.setattr(probe,'urlopen',request)
+    def hold():
+        assert value.adapter.poisoned and value.coordinator._leases_held() and not value.released
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    with pytest.raises(HeldRecovery): value.run()
+    assert not value.grammar_written and value.copy_attempts == 0
+
+
+@pytest.mark.parametrize('stage', ['copy-progress','copy-verified'])
+@pytest.mark.parametrize('mutation', ['source','generation','barrier'])
+def test_grammar_case_rechecks_trusted_authority_before_copy_or_fresh_cohort(fixture, monkeypatch, stage, mutation):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    observe = value.observe
+    def changed(phase):
+        observe(phase)
+        if phase != stage: return
+        if mutation == 'source': (value.source.path/'data/authored-payload.bin').write_bytes(b'changed authored source')
+        elif mutation == 'generation': value.adapter.generation += 1
+        else: value.coordinator._barrier = None
+    monkeypatch.setattr(value,'observe',changed)
+    def hold():
+        assert value.adapter.poisoned and value.coordinator._leases_held() and not value.released
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    with pytest.raises(HeldRecovery): value.run()
+    assert value.grammar_written and len(value.adapter.cohorts) == 1 and not value.grammar_restarted
+
+
+@pytest.mark.parametrize('mutation', ['payload','same-size-payload','payload-read','owner','current',
+                                    'owned','generation','barrier','lease-replaced','lease-unheld'])
+def test_grammar_written_ack_pins_fixture_bytes_and_live_coordinator_identity(fixture,monkeypatch,mutation):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    observe = value.observe
+    retained = []
+    original = {}
+    payload_open = Path.open
+    def checkpoint(phase):
+        observe(phase)
+        if phase != 'grammar-written': return
+        coordinator = value.coordinator
+        original.update(owner=coordinator._owner,current=coordinator.current,owned=coordinator._owned,
+            barrier=coordinator._barrier,legacy=coordinator._legacy_lease,target=coordinator._target_lease)
+        retained.extend((coordinator._legacy_lease,coordinator._target_lease))
+        assert coordinator._barrier is None and value.grammar_ack_state['barrier'] is None
+        payload = value.source.path/'data/authored-payload.bin'
+        if mutation == 'payload': payload.write_bytes(b'changed after grammar ACK')
+        elif mutation == 'same-size-payload': payload.write_bytes(b'X'*len(probe.AUTHORED_PAYLOAD))
+        elif mutation == 'payload-read':
+            def unavailable(path,*args,**options):
+                if path == payload: raise OSError('authored immutable fixture read unavailable')
+                return payload_open(path,*args,**options)
+            monkeypatch.setattr(Path,'open',unavailable)
+        elif mutation == 'owner': coordinator._owner = object()
+        elif mutation == 'current': coordinator.current = object()
+        elif mutation == 'owned': coordinator._owned = []
+        elif mutation == 'generation': value.adapter.generation += 1
+        elif mutation == 'barrier': coordinator._barrier = object()
+        else:
+            coordinator._legacy_lease = SimpleNamespace(held=mutation=='lease-replaced')
+    monkeypatch.setattr(value,'observe',checkpoint)
+    def hold():
+        assert value.adapter.poisoned and not value.released and not value.release_attempted
+        assert len(retained) == 2 and all(lease.held for lease in retained)
+        assert value.grammar_ack_state['leases'] == tuple(retained)
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    try:
+        with pytest.raises(HeldRecovery): value.run()
+        assert value.copy_attempts == value.adapter.drains == 0 and len(value.adapter.cohorts) == 1
+        assert not value.grammar_restarted
+    finally:
+        monkeypatch.setattr(Path,'open',payload_open)
+        if original:
+            coordinator = value.coordinator
+            coordinator._owner,coordinator.current,coordinator._owned = original['owner'],original['current'],original['owned']
+            coordinator._barrier = original['barrier']
+            coordinator._legacy_lease,coordinator._target_lease = original['legacy'],original['target']
+
+
+@pytest.mark.parametrize('mutation', ['payload','owner','lease'])
+def test_grammar_c2_window_cannot_learn_changed_fixture_or_owner_as_its_first_baseline(fixture,monkeypatch,mutation):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    observe = value.observe
+    original = {}
+    def checkpoint(phase):
+        observe(phase)
+        if phase != 'strict-drain-complete': return
+        coordinator = value.coordinator
+        original.update(owner=coordinator._owner,legacy=coordinator._legacy_lease,target=coordinator._target_lease)
+        if mutation == 'payload': (value.source.path/'data/authored-payload.bin').write_bytes(b'changed during actual drain')
+        elif mutation == 'owner': coordinator._owner = object()
+        else: coordinator._legacy_lease = SimpleNamespace(held=True)
+    monkeypatch.setattr(value,'observe',checkpoint)
+    monkeypatch.setattr(probe.migration,'_source_inventory',lambda *_:pytest.fail('Unconfirmed state must not become a source baseline.'))
+    def hold():
+        assert value.adapter.poisoned and not value.released and not value.release_attempted
+        assert original['legacy'].held and original['target'].held
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    try:
+        with pytest.raises(HeldRecovery): value.run()
+        assert value.copy_attempts == 0 and len(value.adapter.cohorts) == 1
+    finally:
+        if original:
+            value.coordinator._owner = original['owner']
+            value.coordinator._legacy_lease,value.coordinator._target_lease = original['legacy'],original['target']
+
+
+@pytest.mark.parametrize('stage', ['strict-drain-complete','writers-signaled'])
+def test_grammar_quiesce_ack_rejects_changed_predrain_barrier_before_stop_proof(fixture,monkeypatch,stage):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    observe = value.observe
+    barrier = object()
+    def changed(phase):
+        observe(phase)
+        if phase == stage: value.coordinator._barrier = barrier
+    monkeypatch.setattr(value,'observe',changed)
+    monkeypatch.setattr(probe.migration,'_source_inventory',lambda *_:pytest.fail('Changed pre-drain frame cannot reach inventory.'))
+    def hold():
+        assert value.adapter.poisoned and not value.released and not value.release_attempted
+        assert value.coordinator._barrier is barrier and value.coordinator._leases_held()
+        assert value.grammar_ack_state['leases'] == (value.coordinator._legacy_lease,value.coordinator._target_lease)
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    with pytest.raises(HeldRecovery): value.run()
+    assert value.copy_attempts == 0 and len(value.adapter.cohorts) == 1 and not value.grammar_restarted
+    signaled = stage == 'writers-signaled'
+    assert value.adapter.host.closed is signaled and value.adapter.active is not signaled
+    assert all(child.exited is signaled for child in value.adapter.host.registered.values())
+
+
+def test_grammar_fixed_quiesce_checks_accept_signaled_inactive_source_without_affecting_final_drain(fixture,monkeypatch):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    check = value._grammar_stop_checkpoint
+    observed = []
+    def checkpoint(phase):
+        observed.append((phase,value.adapter.generation,value.adapter.active,value.coordinator._barrier))
+        check(phase)
+    monkeypatch.setattr(value,'_grammar_stop_checkpoint',checkpoint)
+    assert value.run() == 0
+    assert observed == [('strict-drain-complete',1,True,None),('writers-signaled',1,False,None)]
+    assert value.adapter.generation == value.adapter.drains == 2 and value.released
+
+
+def test_grammar_immutable_payload_link_refuses_before_outside_content(fixture,monkeypatch):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    observe = value.observe
+    opened = Path.open
+    touched = []
+    def checkpoint(phase):
+        observe(phase)
+        if phase != 'grammar-written': return
+        payload = value.source.path/'data/authored-payload.bin'
+        outside = value.fixture/'outside-authored.bin';outside.write_bytes(probe.AUTHORED_PAYLOAD)
+        payload.unlink();payload.symlink_to(outside)
+        def forbidden(path,*args,**options):
+            if path in {payload,outside}:
+                touched.append(True);raise AssertionError('Linked immutable fixture content must remain unobserved.')
+            return opened(path,*args,**options)
+        monkeypatch.setattr(Path,'open',forbidden)
+    monkeypatch.setattr(value,'observe',checkpoint)
+    def hold():
+        assert value.adapter.poisoned and value.coordinator._leases_held() and not value.released
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    try:
+        with pytest.raises(HeldRecovery): value.run()
+        assert not touched and value.copy_attempts == 0
+    finally: monkeypatch.setattr(Path,'open',opened)
+
+
+def test_grammar_semantic_close_failure_retains_its_exact_connection_and_root(fixture, monkeypatch):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    connect = sqlite3.connect
+    references, closes = [], []
+    class Unclosed(sqlite3.Connection):
+        def close(self):
+            closes.append(weakref.ref(self))
+            raise OSError('private grammar verification close failure')
+    def verification(database,*args,**options):
+        if options.get('uri') and '/authored-wal-semantic-' in str(database).replace('\\','/'):
+            connection = connect(database,*args,factory=Unclosed,**options)
+            references.append(weakref.ref(connection)); return connection
+        return connect(database,*args,**options)
+    monkeypatch.setattr(sqlite3,'connect',verification)
+    def hold():
+        assert value.adapter.poisoned and value.coordinator._leases_held() and not value.released
+        assert len(value.verification_ownership) == 1
+        assert value.verification_ownership[0]['connection'] is references[0]()
+        assert value.verification_ownership[0]['root'].is_dir()
+        raise HeldRecovery()
+    monkeypatch.setattr(probe,'hold_keeper_recovery',hold)
+    try:
+        with pytest.raises(HeldRecovery): value.run()
+        assert len(closes) == 1 and not value.grammar_snapshot and len(value.adapter.cohorts) == 1
+    finally:
+        for reference in references:
+            if reference() is not None: sqlite3.Connection.close(reference())
+        for record in value.verification_ownership: shutil.rmtree(record['root'])
+
+
+def test_grammar_api_policy_is_installed_before_real_service_construction(fixture, monkeypatch):
+    value = fixture.make(); value.prepare()
+    layout = value.adapter.layout
+    monkeypatch.delitem(runtime_probe.sys.modules,'backend.api',raising=False)
+    created = []
+    class Runtime:
+        def __init__(self):
+            accounts = service.AccountStore()
+            actual = service.LexiriseService(layout.data_root/'lexirise',accounts=accounts)
+            assert type(actual) is LexiriseService and actual._api_key == runtime_probe.GRAMMAR_KEY
+            reader = LexiriseReadingService(layout.data_root/'lexirise',actual)
+            try: probe._DataCopyProbe._check_grammar(reader.analyze(probe.GRAMMAR_TEXT),known=False)
+            finally: reader.quiesce(1)
+            created.append(actual)
+        def start_updates(self): pass
+    service = SimpleNamespace(Runtime=Runtime,LexiriseService=LexiriseService,AccountStore=AccountStore,
+        CaptureService=SimpleNamespace(warmup=lambda _:None),app=object())
+    module = runtime_probe.importlib.import_module
+    monkeypatch.setattr(runtime_probe.importlib,'import_module',lambda name,*args: service if name=='backend.api' else module(name,*args))
+    monkeypatch.setitem(runtime_probe.sys.modules,'uvicorn',SimpleNamespace(run=lambda *_a,**_k: Runtime()))
+    monkeypatch.setattr(runtime_probe,'_authored_wal_connections',lambda *_:pytest.fail('Grammar must not enable WAL policy.'))
+    assert runtime_probe.api(layout,grammar_probe=True) == 0
+    assert len(created) == 1 and service.LexiriseService is LexiriseService and service.AccountStore is AccountStore
+    monkeypatch.setitem(runtime_probe.sys.modules,'backend.api',object())
+    with pytest.raises(runtime_probe.RuntimeBundleError,match='import was not isolated'):
+        runtime_probe.api(layout,grammar_probe=True)
+    for options in ({'grammar_probe':1},{'grammar_probe':None},{'grammar_probe':True,'wal_probe':True}):
+        with pytest.raises(runtime_probe.RuntimeBundleError,match='fixed authored API policy'):
+            runtime_probe.api(layout,**options)
 
 
 def test_actual_closed_connections_leave_wal_dependent_favorite_for_plain_copy(fixture, monkeypatch, capsys):
@@ -286,8 +741,9 @@ def test_wal_verification_close_failure_retains_exact_connection_and_live_lease_
         for record in value.verification_ownership: shutil.rmtree(record['root'])
 
 
-def test_core_integrity_copy_close_failure_keeps_private_exception_connection_and_live_owner(fixture, monkeypatch, capsys):
-    value = fixture.make(probe.WAL_CASE)
+@pytest.mark.parametrize('case', [probe.WAL_CASE,probe.GRAMMAR_CASE])
+def test_core_integrity_copy_close_failure_keeps_private_exception_connection_and_live_owner(fixture, monkeypatch, capsys, case):
+    value = fixture.make(case)
     connect = sqlite3.connect
     references, closes, escaped, held = [], [], [], []
     class Unclosed(sqlite3.Connection):
@@ -337,7 +793,8 @@ def test_core_integrity_copy_close_failure_keeps_private_exception_connection_an
             if reference() is not None: sqlite3.Connection.close(reference())
 
 
-def test_all_c5_helper_refusals_hold_but_c3_c4_keep_existing_safe_error_policy(fixture, monkeypatch):
+@pytest.mark.parametrize('strict_case', [probe.WAL_CASE,probe.GRAMMAR_CASE])
+def test_strict_helper_refusals_hold_but_c3_c4_keep_existing_safe_error_policy(fixture, monkeypatch, strict_case):
     failure = HostProbeError('insufficient-space', 'private generic helper refusal')
     def refuse(*_args, **_options): raise failure
     monkeypatch.setattr(probe.migration, 'copy_and_verify_synthetic', refuse)
@@ -345,7 +802,7 @@ def test_all_c5_helper_refusals_hold_but_c3_c4_keep_existing_safe_error_policy(f
         value = fixture.make(case)
         assert value.run() == 2 and value.released and not value.adapter.poisoned
         assert value.core_copy_failure is None and value.adapter.generation == 1
-    value = fixture.make(probe.WAL_CASE)
+    value = fixture.make(strict_case)
     def hold():
         assert value.core_copy_failure is failure and value.adapter.poisoned
         assert value.coordinator._leases_held() and not value.release_attempted
@@ -1324,6 +1781,87 @@ foreach ($case in $cases) {
     $stream.Dispose();$index++
 }
 ''', cases)
+
+
+def test_powershell_grammar_protocol_requires_order_scope_and_real_populated_row(fixture, capsys):
+    value = fixture.make(probe.GRAMMAR_CASE)
+    assert value.run() == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    cases = [{'probe_case':probe.GRAMMAR_CASE,'phase':event['phase'],'event':event,'accept':True} for event in events]
+    written = next(event for event in events if event['phase']=='grammar-written')
+    for field, changed in [('schema',probe.SCHEMA),('reading_transport','arbitrary-remote-200'),
+            ('grammar_credential_fixture','environment'),('grammar_baseline','not-run'),
+            ('unknown_grammar_rule','not-run'),('grammar_written','not-run'),
+            ('grammar_snapshot','one-scoped-choice-four'),('grammar_override_rows',1)]:
+        cases.append({'probe_case':probe.GRAMMAR_CASE,'phase':'grammar-written','event':{**written,field:changed},'accept':False})
+    verified = next(event for event in events if event['phase']=='copy-verified')
+    for field, changed in [('grammar_override_rows',0),('grammar_override_rows',True),('grammar_override_rows',2),
+            ('grammar_snapshot','not-run'),('grammar_restarted','four-with-local-override'),('r19_complete',True)]:
+        cases.append({'probe_case':probe.GRAMMAR_CASE,'phase':'copy-verified','event':{**verified,field:changed},'accept':False})
+    for control in (probe.CASE,probe.RESUME_CASE,probe.WAL_CASE):
+        cases.append({'probe_case':control,'phase':'grammar-written','event':written,'accept':False})
+    for wrong_phase in ('copy-interrupted','wal-set-observed'):
+        cases.append({'probe_case':probe.GRAMMAR_CASE,'phase':wrong_phase,'event':written,'accept':False})
+    script = Path(__file__).resolve().parents[2]/'scripts/probe-frozen-data-copy.ps1'
+    _powershell_contract(script,['New-DataCopyControlReader','Read-DataCopyControlLine','Read-DataCopyEvent'],r'''
+$proof=[pscustomobject]@{source_commit=('a'*40);build_id='authored-data-copy-fixture'}
+$cases=[Console]::In.ReadToEnd() | ConvertFrom-Json
+$index=0
+foreach ($case in $cases) {
+    $script:ProbeCase=$case.probe_case
+    $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($case.event | ConvertTo-Json -Depth 8 -Compress)+"`n")
+    $stream=[IO.MemoryStream]::new($bytes,$false)
+    $script:controlReader=New-DataCopyControlReader $stream ([Threading.Tasks.Task]::CompletedTask)
+    $accepted=$true
+    try { Read-DataCopyEvent $case.phase } catch { $accepted=$false }
+    if ($accepted -ne $case.accept) {
+        [Console]::Out.WriteLine((@{schema='proxy-r19-data-copy-contract-failure-v1';case_index=$index;
+            expected=[bool]$case.accept;actual=[bool]$accepted} | ConvertTo-Json -Compress))
+        exit 2
+    }
+    $stream.Dispose();$index++
+}
+''',cases)
+
+
+def test_powershell_grammar_receipt_cannot_omit_populated_row_or_extra_source_block():
+    script = Path(__file__).resolve().parents[2]/'scripts/probe-frozen-data-copy.ps1'
+    _powershell_contract(script,['Write-DataCopyReceipt'],r'''
+$private=Join-Path ([IO.Path]::GetTempPath()) ('r19-authored-grammar-receipt-'+[guid]::NewGuid().ToString('N'))
+$null=New-Item -ItemType Directory -Path $private
+$slotSourceOperation=Join-Path $private 'source-fixture.ps1'
+[IO.File]::WriteAllText($slotSourceOperation,'authored source-operation fixture')
+$proof=[pscustomobject]@{source_commit=('a'*40);build_id='authored-data-copy-fixture'}
+$script:ProbeCase='authored-data-copy-grammar';$Output=Join-Path $private 'grammar.json'
+$walFiles=0;$shmFiles=0;$stage='release';$failureCategory='none'
+try {
+    foreach ($fault in @('missing-block','empty-choice','bool-choice','unverified')) {
+        $sourceBlocks=10;$grammarRows=1;$grammarVerified=$true
+        switch ($fault) {
+            'missing-block' {$sourceBlocks=9}
+            'empty-choice' {$grammarRows=0}
+            'bool-choice' {$grammarRows=$true}
+            'unverified' {$grammarVerified=$false}
+        }
+        $accepted=$true
+        try { Write-DataCopyReceipt 'passed' } catch { $accepted=$false }
+        if ($accepted -or (Test-Path -LiteralPath $Output)) { throw 'Grammar receipt accepted incomplete fixed proof.' }
+    }
+    $sourceBlocks=10;$grammarRows=1;$grammarVerified=$true
+    Write-DataCopyReceipt 'passed'
+    $value=Get-Content -LiteralPath $Output -Raw | ConvertFrom-Json
+    if ($value.schema -cne 'proxy-r19-frozen-data-copy-grammar-receipt-v1' -or
+        $value.case -cne 'authored-data-copy-grammar' -or
+        $value.scope -cne 'authored-populated-local-grammar-copy-with-living-coordinator' -or
+        $value.grammar_override_rows -ne 1 -or $value.grammar_baseline -cne 'zero-without-local-override' -or
+        $value.grammar_snapshot -cne 'one-scoped-choice-four' -or $value.grammar_restarted -cne 'four-with-local-override' -or
+        $value.unknown_grammar_rule -cne 'rejected-404' -or $value.reading_transport -cne 'fixed-mock-settings-analysis-only' -or
+        $value.target_activation -or $value.production_activation -or $value.r19_complete -or
+        $null -ne $value.PSObject.Properties['sqlite_policy'] -or $null -ne $value.PSObject.Properties['copy_resumed']) {
+        throw 'Grammar receipt scope or gates changed.'
+    }
+} finally { Remove-Item -LiteralPath $private -Recurse -Force }
+''')
 
 
 def test_powershell_wal_receipt_refuses_missing_dependency_inputs_and_extra_block():

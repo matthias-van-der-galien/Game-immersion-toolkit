@@ -16,12 +16,14 @@ import tempfile
 import threading
 import uuid
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 from . import bundle_migration as migration
 from .bundle_host import (HostProbeError, SyntheticHandoff, SyntheticHostCoordinator,
                           WriterStopProof, _atomic_json, create_synthetic_root)
 from .models import TextMatch
 from .runtime_host import FrozenProbeHost, HostProbeFailure, hold_keeper_recovery
+from .runtime_probe import GRAMMAR_TEXT, GRAMMAR_SLUG, GRAMMAR_ABSENT_SLUG, GRAMMAR_CHOICE_KEY
 from .storage import TranscriptStore
 
 SCHEMA = 'proxy-r19-frozen-data-copy-probe-v1'
@@ -34,17 +36,21 @@ WAL_SCHEMA = 'proxy-r19-frozen-data-copy-wal-probe-v1'
 WAL_SCOPE = 'authored-transcript-retained-wal-copy-with-living-coordinator'
 WAL_POLICY = 'no-checkpoint-on-close-per-open-readback'
 WAL_FILE_BYTES = 8 * 1024 * 1024
+GRAMMAR_CASE = 'authored-data-copy-grammar'
+GRAMMAR_SCHEMA = 'proxy-r19-frozen-data-copy-grammar-probe-v1'
+GRAMMAR_SCOPE = 'authored-populated-local-grammar-copy-with-living-coordinator'
 PHASES = ('setup-closed', 'favorite-written', 'strict-drain-complete', 'writers-signaled',
           'copy-progress', 'copy-verified', 'source-resumed', 'final-strict-drain-complete',
           'final-writers-signaled', 'released')
 RESUME_PHASES = (*PHASES[:5], 'copy-interrupted', *PHASES[5:])
 WAL_PHASES = (*PHASES[:4], 'wal-set-observed', *PHASES[4:])
+GRAMMAR_PHASES = (*PHASES[:2], 'grammar-written', *PHASES[2:])
 FAILURES = frozenset({'fixture-unavailable', 'setup-close-unconfirmed', 'setup-still-open',
     'cohort-unconfirmed', 'owned-host-unconfirmed', 'copy-refused', 'copy-result-unconfirmed',
     'schema-unconfirmed', 'authored-rows-differ', 'pointer-changed', 'source-changed',
     'control-unavailable', 'control-invalid', 'lease-release-unconfirmed', 'interrupted-copy-unconfirmed',
     'unexpected-data-copy-failure', 'wal-set-unavailable', 'wal-dependency-unconfirmed',
-    'wal-verification-cleanup-unconfirmed', 'sqlite-version-unavailable'})
+    'wal-verification-cleanup-unconfirmed', 'sqlite-version-unavailable', 'grammar-choice-unconfirmed'})
 DATABASE_VERSIONS = {'data/transcript-v2.db': 0, 'data/lexirise/exports-v2.db': 0,
                      'data/lexirise/reading-cache-v2.db': 0}
 TABLE_COLUMNS = {
@@ -67,6 +73,7 @@ STOPPED = WriterStopProof(True, True, True, True, True)
 INSPECTION_ENTRIES = 4096
 INSPECTION_DEPTH = 32
 INSPECTION_BYTES = 64 * 1024 * 1024
+AUTHORED_PAYLOAD = b'R19 authored bytes only\x00\xff'
 
 
 class DataCopyFailure(RuntimeError):
@@ -266,7 +273,7 @@ def _verification_scope(target, retained=None):
         retained.remove(record)
 
 
-def verify_authored_snapshot(snapshot, target, expected, *, retained=None):
+def verify_authored_snapshot(snapshot, target, expected, *, retained=None, grammar_probe=False):
     """Read separate verification copies; never run store initialization here."""
     for name in TABLE_COLUMNS:
         with _verification_scope(target, retained) as record:
@@ -279,10 +286,10 @@ def verify_authored_snapshot(snapshot, target, expected, *, retained=None):
                     shutil.copy2(sidecar, database.with_name(database.name+suffix))
             connection = record['connection'] = sqlite3.connect(database.as_uri()+'?mode=ro', uri=True)
             connection.row_factory = sqlite3.Row
-            _verify_store(connection, name, expected)
+            _verify_store(connection, name, expected, grammar_probe=grammar_probe)
 
 
-def _verify_store(connection, name, expected):
+def _verify_store(connection, name, expected, *, grammar_probe=False):
     tables = TABLE_COLUMNS[name]
     actual = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     known = {**tables, **OPTIONAL_TABLE_COLUMNS.get(name, {})}
@@ -298,6 +305,10 @@ def _verify_store(connection, name, expected):
                 for row in connection.execute('SELECT * FROM transcript_lines ORDER BY id')]
         if rows != expected:
             raise DataCopyFailure('authored-rows-differ')
+    if grammar_probe and name == 'data/lexirise/reading-cache-v2.db':
+        rows = [tuple(row) for row in connection.execute('SELECT slug,proficiency FROM grammar_choices ORDER BY slug')]
+        if rows != [(GRAMMAR_CHOICE_KEY, 4)] or type(rows[0][1]) is not int:
+            raise DataCopyFailure('grammar-choice-unconfirmed')
 
 
 def verify_main_only_transcript(source, target, expected, retained):
@@ -319,11 +330,16 @@ def verify_main_only_transcript(source, target, expected, retained):
 
 class _FrozenAuthoredDataRuntime:
     """Fixed writer admission only. The coordinator, not this adapter, owns leases."""
-    def __init__(self, layout, installation_id, observe, *, wal_probe=False):
-        if type(wal_probe) is not bool:
+    def __init__(self, layout, installation_id, observe, *, wal_probe=False, grammar_probe=False,
+                 grammar_checkpoint=None):
+        if type(wal_probe) is not bool or type(grammar_probe) is not bool or wal_probe and grammar_probe:
+            raise DataCopyFailure('control-invalid')
+        if grammar_probe and not callable(grammar_checkpoint) or not grammar_probe and grammar_checkpoint is not None:
             raise DataCopyFailure('control-invalid')
         self.layout, self.installation_id, self.observe = layout, installation_id, observe
         self.wal_probe = wal_probe
+        self.grammar_probe = grammar_probe
+        self.grammar_checkpoint = grammar_checkpoint
         self.runtime_id = 'authored-source'
         self.generation = self.drains = 0
         self.setup_open = self.active = self.poisoned = False
@@ -356,7 +372,9 @@ class _FrozenAuthoredDataRuntime:
         try:
             self.host = FrozenProbeHost(self.layout)
             self.cohorts.append(self.host)
-            if self.wal_probe:
+            if self.grammar_probe:
+                self.host.start_registered(detached_console=True, grammar_probe=True)
+            elif self.wal_probe:
                 self.host.start_registered(detached_console=True, wal_probe=True)
             else:
                 self.host.start_registered(detached_console=True)
@@ -387,11 +405,14 @@ class _FrozenAuthoredDataRuntime:
         self._require_owned()
         if self.setup_open or not self.active or self.host is None:
             raise DataCopyFailure('cohort-unconfirmed')
+        first_grammar_cohort = self.grammar_probe and self.generation == 1
         try:
             self.host.quiesce_registered()
             self.drains += 1
             prefix = 'final-' if self.generation == 2 else ''
             self.observe(prefix+'strict-drain-complete')
+            if first_grammar_cohort:
+                self.grammar_checkpoint('strict-drain-complete')
             self.host.close()
             children = self.host.registered
             if (not self.host.closed or self.host.tree is not None or self.host.recovery_required
@@ -401,7 +422,36 @@ class _FrozenAuthoredDataRuntime:
                 raise DataCopyFailure('cohort-unconfirmed')
             self.active = False
             self.observe(prefix+'writers-signaled')
+            if first_grammar_cohort:
+                self.grammar_checkpoint('writers-signaled')
             return STOPPED, SyntheticHandoff(False)
+        except BaseException:
+            self.poisoned = True
+            raise
+
+    def reject_unknown_grammar(self):
+        """One fixed negative HTTP case; never arbitrary expected status/URL."""
+        self._require_owned()
+        if not self.grammar_probe or not self.active:
+            raise DataCopyFailure('cohort-unconfirmed')
+        request = Request('http://127.0.0.1:8766/api/lines/1/reading/grammar',
+            data=json.dumps({'slug': GRAMMAR_ABSENT_SLUG, 'known': True}).encode(), method='POST',
+            headers={'Content-Type': 'application/json', 'X-Proxy-Transcript': 'lexirise',
+                     'X-Proxy-Transcript-Account': 'legacy'})
+        try:
+            with self.host._registered_listener_scope() as owned:
+                if not owned:
+                    raise DataCopyFailure('owned-host-unconfirmed')
+                try:
+                    with urlopen(request, timeout=5) as response:
+                        response.read(65537)
+                    raise DataCopyFailure('grammar-choice-unconfirmed')
+                except HTTPError as response:
+                    with response:
+                        body = response.read(65537)
+                        if (response.code != 404 or len(body) > 65536
+                                or json.loads(body) != {'detail': 'Grammar rule not found in this line'}):
+                            raise DataCopyFailure('grammar-choice-unconfirmed')
         except BaseException:
             self.poisoned = True
             raise
@@ -425,7 +475,7 @@ class _FrozenAuthoredDataRuntime:
 
 class _DataCopyProbe:
     def __init__(self, layout, stream, *, case=CASE):
-        if type(case) is not str or case not in {CASE, RESUME_CASE, WAL_CASE}:
+        if type(case) is not str or case not in {CASE, RESUME_CASE, WAL_CASE, GRAMMAR_CASE}:
             raise DataCopyFailure('control-invalid')
         FrozenProbeHost(layout)  # Existing exact-image/profile/private-root/dev-tool guards.
         self.outer, self.stream = layout, stream
@@ -444,6 +494,9 @@ class _DataCopyProbe:
         self.wal_set_observed = self.wal_dependency = False
         self.verification_ownership = []
         self.core_copy_failure = None
+        self.grammar_baseline = self.grammar_unknown_refused = self.grammar_written = False
+        self.grammar_snapshot = self.grammar_restarted = False
+        self.grammar_ack_state = None
         self.commands = queue.Queue(maxsize=1)
         def read():
             try:
@@ -459,7 +512,7 @@ class _DataCopyProbe:
     def emit(self, phase, *, failure='none'):
         adapter = self.adapter
         children = [child for host in adapter.cohorts for child in host.registered.values()] if adapter else []
-        value = {'schema': WAL_SCHEMA if self.case == WAL_CASE else RESUME_SCHEMA if self.case == RESUME_CASE else SCHEMA,
+        value = {'schema': GRAMMAR_SCHEMA if self.case == GRAMMAR_CASE else WAL_SCHEMA if self.case == WAL_CASE else RESUME_SCHEMA if self.case == RESUME_CASE else SCHEMA,
             'kind': 'data-copy', 'case': self.case, 'phase': phase,
             'status': 'failed' if failure != 'none' else 'passed' if phase == 'released' else 'observing',
             'failure': failure, 'source_commit': self.outer.source_commit, 'build_id': self.outer.build_id,
@@ -491,10 +544,19 @@ class _DataCopyProbe:
                 transcript_wal_bytes=self.transcript_wal_bytes, transcript_shm_bytes=self.transcript_shm_bytes,
                 wal_set='nonempty-after-retained-signals' if self.wal_set_observed else 'not-run',
                 wal_dependency='main-only-false-full-set-true' if self.wal_dependency else 'not-run')
+        if self.case == GRAMMAR_CASE:
+            value.update(scope=GRAMMAR_SCOPE, reading_transport='fixed-mock-settings-analysis-only',
+                grammar_credential_fixture='in-memory-noncredential',
+                grammar_baseline='zero-without-local-override' if self.grammar_baseline else 'not-run',
+                unknown_grammar_rule='rejected-404' if self.grammar_unknown_refused else 'not-run',
+                grammar_written='four-with-local-override' if self.grammar_written else 'not-run',
+                grammar_snapshot='one-scoped-choice-four' if self.grammar_snapshot else 'not-run',
+                grammar_restarted='four-with-local-override' if self.grammar_restarted else 'not-run',
+                grammar_override_rows=int(self.grammar_snapshot))
         print(json.dumps(value, separators=(',', ':')), flush=True)
 
     def observe(self, phase):
-        phases = WAL_PHASES if self.case == WAL_CASE else RESUME_PHASES if self.case == RESUME_CASE else PHASES
+        phases = GRAMMAR_PHASES if self.case == GRAMMAR_CASE else WAL_PHASES if self.case == WAL_CASE else RESUME_PHASES if self.case == RESUME_CASE else PHASES
         if phase not in phases or phase == 'released':
             raise DataCopyFailure('control-invalid')
         self.phase = phase
@@ -536,7 +598,8 @@ class _DataCopyProbe:
         (layout.state_root/'synthetic-probe.json').write_text(
             json.dumps({'build_id': layout.build_id, 'synthetic': True}), encoding='utf-8')
         self.adapter = _FrozenAuthoredDataRuntime(layout, self.source.installation_id, self.observe,
-                                                wal_probe=self.case == WAL_CASE)
+            wal_probe=self.case == WAL_CASE, grammar_probe=self.case == GRAMMAR_CASE,
+            grammar_checkpoint=self._grammar_stop_checkpoint if self.case == GRAMMAR_CASE else None)
         self.coordinator = _ProbeCoordinator(self.source, self.target, self.adapter)
         self.enter_attempted = True
         self.coordinator.__enter__()
@@ -547,7 +610,7 @@ class _DataCopyProbe:
             self.expected = seed_authored(layout.data_root/'transcript-v2.db')
             if self.case == WAL_CASE:
                 self.main_only_expected = json.loads(json.dumps(self.expected))
-            (layout.data_root/'authored-payload.bin').write_bytes(b'R19 authored bytes only\x00\xff')
+            (layout.data_root/'authored-payload.bin').write_bytes(AUTHORED_PAYLOAD)
         except BaseException as error:
             if isinstance(error, DataCopyFailure) and error.code == 'setup-close-unconfirmed':
                 self.adapter.poisoned = True
@@ -580,6 +643,8 @@ class _DataCopyProbe:
         try:
             if self.adapter.poisoned:
                 raise DataCopyFailure('cohort-unconfirmed')
+            if self.case == GRAMMAR_CASE:
+                self._confirm_grammar_payload()
             for root in (self.source.path, self.target.path):
                 _guard_path(root, 'directory')
                 if _guard_path(root/'.r19-synthetic-fixture.json', 'file').st_size > 4096:
@@ -604,11 +669,11 @@ class _DataCopyProbe:
         try:
             return migration.copy_and_verify_synthetic(plan, barrier, **options)
         except BaseException as error:
-            if self.case == WAL_CASE:
+            if self.case in {WAL_CASE, GRAMMAR_CASE}:
                 # The unchanged helper also opens integrity-verification copies.
                 # Its exception may mean failed close/cleanup, even while source
                 # bytes still match. Keep the original private traceback/context
-                # owner alive; never classify C5 helper failure as safe release.
+                # owner alive for the WAL and populated-grammar cases.
                 self.core_copy_failure = error
                 self.adapter.poisoned = True
                 raise
@@ -711,6 +776,114 @@ class _DataCopyProbe:
         self.observe('wal-set-observed')
         self._confirm_source_authority(plan, barrier, baseline, generation, leases)
 
+    def _read_grammar(self):
+        return self.adapter.request(Request('http://127.0.0.1:8766/api/lines/1/reading',
+            headers={'X-Proxy-Transcript-Account': 'legacy'}))
+
+    @staticmethod
+    def _check_grammar(value, *, known):
+        if (type(value) is not dict or value.get('text') != GRAMMAR_TEXT
+                or value.get('pendingMeanings') is not False or value.get('analysisPending') is not False
+                or type(value.get('grammar')) is not list or len(value['grammar']) != 1):
+            raise DataCopyFailure('grammar-choice-unconfirmed')
+        rule = value['grammar'][0]
+        expected = {'slug': GRAMMAR_SLUG, 'title': 'Owned fixture rule', 'subtitle': '', 'level': 'authored',
+            'proficiency': 4 if known else 0, 'localOverride': known,
+            'spans': [{'start': 0, 'end': 1}], 'examples': ['这']}
+        if (type(rule) is not dict or rule != expected or type(rule['proficiency']) is not int
+                or type(rule['localOverride']) is not bool
+                or any(type(span['start']) is not int or type(span['end']) is not int for span in rule['spans'])):
+            raise DataCopyFailure('grammar-choice-unconfirmed')
+
+    def _write_grammar(self):
+        if self.expected[0]['id'] != 1 or self.expected[0]['source_text'] != GRAMMAR_TEXT:
+            raise DataCopyFailure('grammar-choice-unconfirmed')
+        self._check_grammar(self._read_grammar(), known=False)
+        self.grammar_baseline = True
+        self.adapter.reject_unknown_grammar()
+        self._check_grammar(self._read_grammar(), known=False)
+        self.grammar_unknown_refused = True
+        result = self.adapter.request(Request('http://127.0.0.1:8766/api/lines/1/reading/grammar',
+            data=json.dumps({'slug': GRAMMAR_SLUG, 'known': True}).encode(), method='POST',
+            headers={'Content-Type': 'application/json', 'X-Proxy-Transcript': 'lexirise',
+                     'X-Proxy-Transcript-Account': 'legacy'}))
+        if (type(result) is not dict or result != {'slug': GRAMMAR_SLUG, 'proficiency': 4, 'localOverride': True}
+                or type(result['proficiency']) is not int or result['localOverride'] is not True):
+            raise DataCopyFailure('grammar-choice-unconfirmed')
+        self._check_grammar(self._read_grammar(), known=True)
+        self.grammar_written = True
+        self.grammar_ack_state = self._grammar_checkpoint()
+        self.observe('grammar-written')
+        self._grammar_checkpoint(self.grammar_ack_state)
+
+    def _confirm_grammar_payload(self):
+        # This file is authored immutable fixture input, not a live SQLite set.
+        # Its known bytes never become authority for any database or writer.
+        if (self.source is not self.coordinator.legacy or self.target is not self.coordinator.state
+                or self.grammar_ack_state is not None and
+                (self.coordinator is not self.grammar_ack_state['coordinator']
+                 or self.source is not self.grammar_ack_state['source']
+                 or self.target is not self.grammar_ack_state['target'])):
+            raise DataCopyFailure('cohort-unconfirmed')
+        state = self.grammar_ack_state
+        if state is not None:
+            coordinator = self.coordinator
+            owned = tuple(coordinator._owned)
+            leases = (coordinator._legacy_lease, coordinator._target_lease)
+            generation = self.adapter.write_generation()
+            if (coordinator.owner is not state['owner'] or coordinator.current is not state['current']
+                    or self.adapter is not state['current'] or type(generation) is not int or generation != state['generation']
+                    or len(owned) != len(state['owned'])
+                    or any(current is not previous for current, previous in zip(owned, state['owned']))
+                    or any(current is not previous for current, previous in zip(leases, state['leases']))
+                    or not all(lease.held for lease in leases)):
+                raise DataCopyFailure('cohort-unconfirmed')
+        path = self.source.path/'data/authored-payload.bin'
+        if _guard_path(path, 'file').st_size != len(AUTHORED_PAYLOAD):
+            raise DataCopyFailure('source-changed')
+        with path.open('rb') as stream:
+            if stream.read(len(AUTHORED_PAYLOAD)+1) != AUTHORED_PAYLOAD:
+                raise DataCopyFailure('source-changed')
+
+    def _grammar_checkpoint(self, expected=None, *, writers_signaled=False):
+        """Recheck the live pre-drain owner; this does not mint a copy barrier."""
+        try:
+            if type(writers_signaled) is not bool or writers_signaled and expected is None:
+                raise DataCopyFailure('cohort-unconfirmed')
+            coordinator = self.coordinator
+            if expected is not None and coordinator is not expected['coordinator']:
+                raise DataCopyFailure('cohort-unconfirmed')
+            owner = expected['owner'] if expected is not None else coordinator.owner
+            coordinator._require_owner(owner)
+            self._confirm_grammar_payload()
+            leases = (coordinator._legacy_lease, coordinator._target_lease)
+            generation = self.adapter.write_generation()
+            owned = tuple(coordinator._owned)
+            if (coordinator.current is not self.adapter or len(owned) != 1 or owned[0] is not self.adapter
+                    or self.adapter.poisoned or self.adapter.active is not (not writers_signaled) or self.adapter.setup_open
+                    or type(generation) is not int or generation != 1 or coordinator._barrier is not None
+                    or not all(lease.held for lease in leases)):
+                raise DataCopyFailure('cohort-unconfirmed')
+            if expected is not None and (coordinator.owner is not expected['owner']
+                    or coordinator.current is not expected['current'] or generation != expected['generation']
+                    or coordinator._barrier is not expected['barrier']
+                    or len(owned) != len(expected['owned'])
+                    or any(current is not previous for current, previous in zip(owned, expected['owned']))
+                    or any(current is not previous for current, previous in zip(leases, expected['leases']))):
+                raise DataCopyFailure('cohort-unconfirmed')
+            return {'coordinator': coordinator, 'owner': owner, 'current': coordinator.current,
+                'source': self.source, 'target': self.target, 'owned': owned, 'generation': generation,
+                'barrier': coordinator._barrier, 'leases': leases}
+        except BaseException:
+            self.adapter.poisoned = True
+            raise
+
+    def _grammar_stop_checkpoint(self, phase):
+        if phase not in {'strict-drain-complete', 'writers-signaled'} or self.grammar_ack_state is None:
+            self.adapter.poisoned = True
+            raise DataCopyFailure('cohort-unconfirmed')
+        self._grammar_checkpoint(self.grammar_ack_state, writers_signaled=phase == 'writers-signaled')
+
     def exercise(self):
         self.adapter.start()
         first = self.expected[0]
@@ -720,6 +893,8 @@ class _DataCopyProbe:
         if _row(value) != first:
             raise DataCopyFailure('authored-rows-differ')
         self.observe('favorite-written')
+        if self.case == GRAMMAR_CASE:
+            self._write_grammar()
         plan = migration.SyntheticMigrationPlan(self.source, self.target, str(uuid.uuid4()),
             database_versions=DATABASE_VERSIONS)
         failure_source_confirmed = False
@@ -727,6 +902,10 @@ class _DataCopyProbe:
             with self.coordinator.stopped_writers(self.coordinator.owner) as barrier:
                 try:
                     self._guard_source_groups()
+                    if self.case == GRAMMAR_CASE:
+                        self._confirm_grammar_payload()
+                        barrier.check(self.source)
+                        barrier.check_target(self.target)
                     if self.case == WAL_CASE:
                         self._guard_wal_file_bounds()
                     baseline = migration._source_inventory(plan)
@@ -744,7 +923,11 @@ class _DataCopyProbe:
                         raise DataCopyFailure('copy-result-unconfirmed')
                     snapshot = self.target.path/'staging'/plan.migration_id
                     _guard_snapshot(snapshot, *baseline)
-                    if self.case == WAL_CASE:
+                    if self.case == GRAMMAR_CASE:
+                        verify_authored_snapshot(snapshot, self.target.path, self.expected,
+                            retained=self.verification_ownership, grammar_probe=True)
+                        self.grammar_snapshot = True
+                    elif self.case == WAL_CASE:
                         verify_authored_snapshot(snapshot, self.target.path, self.expected,
                                                  retained=self.verification_ownership)
                     else:
@@ -759,7 +942,7 @@ class _DataCopyProbe:
                     self.observe('copy-verified')
                     self._confirm_source_authority(plan, barrier, baseline, generation, leases)
                 except BaseException:
-                    if self.case == WAL_CASE and self.verification_ownership:
+                    if self.case in {WAL_CASE, GRAMMAR_CASE} and self.verification_ownership:
                         self.adapter.poisoned = True
                     if not self.adapter.poisoned:
                         self._confirm_source_authority(plan, barrier, baseline, generation, leases)
@@ -783,6 +966,9 @@ class _DataCopyProbe:
         if not isinstance(rows, list) or sorted((_row(row) for row in rows), key=lambda row: row['id']) != self.expected:
             raise DataCopyFailure('authored-rows-differ')
         self.logical_preserved = True
+        if self.case == GRAMMAR_CASE:
+            self._check_grammar(self._read_grammar(), known=True)
+            self.grammar_restarted = True
         self.observe('source-resumed')
         self.adapter.quiesce()
         self._pointer_unchanged()
@@ -818,7 +1004,7 @@ class _DataCopyProbe:
             if self.entered and not self.release_attempted:
                 try:
                     failure = {
-                        'schema': WAL_SCHEMA if self.case == WAL_CASE else RESUME_SCHEMA if self.case == RESUME_CASE else SCHEMA,
+                        'schema': GRAMMAR_SCHEMA if self.case == GRAMMAR_CASE else WAL_SCHEMA if self.case == WAL_CASE else RESUME_SCHEMA if self.case == RESUME_CASE else SCHEMA,
                         'status': 'failed', 'failure': code, 'phase': self.phase,
                         'source_commit': self.outer.source_commit, 'build_id': self.outer.build_id,
                         'target_activation': False, 'r19_complete': False}
@@ -826,6 +1012,8 @@ class _DataCopyProbe:
                         failure.update(case=self.case, scope=RESUME_SCOPE)
                     if self.case == WAL_CASE:
                         failure.update(case=self.case, scope=WAL_SCOPE)
+                    if self.case == GRAMMAR_CASE:
+                        failure.update(case=self.case, scope=GRAMMAR_SCOPE)
                     failure_path = self.target.path/'host-v1/data-copy-failure.json'
                     _guard_path(failure_path.parent, 'directory')
                     _guard_path(failure_path, 'file', missing=True)

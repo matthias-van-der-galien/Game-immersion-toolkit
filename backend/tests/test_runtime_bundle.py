@@ -133,7 +133,7 @@ def test_durable_settings_cannot_be_equal_to_or_below_disposable_roots(tmp_path)
     assert layout.settings_root in layout.cache_root.parents, 'The intended settings parent may contain disposable sibling groups'
 
 
-@pytest.mark.parametrize('kind', ['api', 'api-wal'])
+@pytest.mark.parametrize('kind', ['api', 'api-wal', 'api-grammar'])
 def test_fixed_api_probe_dispatch_keeps_experimental_main_image_gate(tmp_path, monkeypatch, kind):
     layout = frozen_layout(tmp_path, profile='runtime-experiment')
     calls = []
@@ -146,7 +146,7 @@ def test_fixed_api_probe_dispatch_keeps_experimental_main_image_gate(tmp_path, m
                       replace(layout, executable=layout.application_root/'ProxyTranscriptAsr.exe')):
         monkeypatch.setattr(bundle_entry, 'discover_layout', lambda: forbidden)
         with pytest.raises(bundle.RuntimeBundleError): bundle_entry.main(['--runtime-probe', kind])
-    assert len(calls) == 1 and 'api-wal' not in bundle_entry.CHILD_TARGETS
+    assert len(calls) == 1 and 'api-wal' not in bundle_entry.CHILD_TARGETS and 'api-grammar' not in bundle_entry.CHILD_TARGETS
     for arguments in (['--runtime-probe', 'api-wal-extra'], ['--runtime-probe', kind, 'extra']):
         with pytest.raises(bundle.RuntimeBundleError): bundle_entry.main(arguments)
 
@@ -167,6 +167,7 @@ def test_fixed_wal_probe_requires_exact_supplier_before_api_start(tmp_path, monk
     with pytest.raises(bundle.RuntimeBundleError, match='exact reviewed Python supplier'):
         runtime_probe.main('api-wal', layout)
     assert runtime_probe.main('api', layout) == 23 and calls[-1] == (layout, {'wal_probe': False})
+    assert runtime_probe.main('api-grammar', layout) == 23 and calls[-1] == (layout, {'grammar_probe': True})
     supplier = json.loads((Path(__file__).parents[2]/'packaging/runtime-bundle/python-supplier.json').read_text())
     assert supplier['version'] == '3.12.16'
 
