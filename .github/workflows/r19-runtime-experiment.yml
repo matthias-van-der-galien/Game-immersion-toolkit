@@ -393,7 +393,7 @@ jobs:
             'runtime_codec_output', 'native_input_ownership', 'source_pcm_probe', 'source_formats',
             'portal_assets', 'portal2_assets', 'halflife2_assets', 'window_capture', 'runtime_host',
             'diagnostic_notice_delivery', 'flatbuffers_notices', 'guarded_slot_probe',
-            'bundle_host', 'bundle_migration', 'runtime_data_copy_probe'
+            'bundle_host', 'bundle_migration', 'runtime_data_copy_probe', 'storage'
           ) | ForEach-Object { "backend/tests/test_$_.py" }
           & $env:PYTHON -B -m pytest -q @contracts
           if ($LASTEXITCODE -ne 0) { throw 'Affected frozen boundaries failed.' }
