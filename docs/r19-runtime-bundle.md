@@ -1032,6 +1032,51 @@ contrast marker was delivered. Null is not an empty-folder observation, and
 the failure does not distinguish that call from its marker-expression evaluation.
 All existing rights, native, host and activation limits remain.
 
+## Verified populated local grammar copy at a1c5e92
+
+[Run 41225646234](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41225646234)
+at `a1c5e9261d1115ba80c73b0fb4d7dcea1c32ff89` passed 1,150 Windows
+contracts without skips (one warning, 128.30 seconds), freezing and all selected
+runtime/C1/cold-slot/living-keeper/C3/C4/C5/C6 observations. Root and peer checked
+the thirteen-entry metadata archive `13051759650`: 1,337,539 bytes, SHA-256
+`a57651dea4c9e2fdded92e3cdab91167ab84ddd28ad53a69595eed8525722333`.
+Its inventory binds 1,449 files, 642 directories and 620,135,324 bytes; all
+473 native A2/P1 records and 113 component-notice references (104 distinct hashes)
+were checked. Native payloads remained runner-local. Named immutable source pins
+and original supplier notices were checked; no global local source-fingerprint
+recomputation is claimed.
+
+The distinct [C6 receipt](r19-frozen-data-copy-probe.md#verified-c6-checkpoint-at-a1c5e92)
+adds actual local HTTP/SQLite preservation of one populated grammar override.
+Fixed mocked external analysis continues to report proficiency0 while the real
+local setter writes4; the separate semantic copy contains exactly one scoped4
+row, and a fresh original-source cohort reads4 with localOverride=true. Two
+source cohorts, four retained writer signals, ten actual source-operation blocks,
+unchanged source/pointer and explicit cleanup passed. C3/C4 passed again with
+zero WAL/SHM; C5 again retained the 16,512-byte transcript WAL and 32,768-byte SHM.
+These are authored fixture observations, not real account, general populated-data,
+export-ledger, settings/browser, target-activation or global writer acceptance.
+
+Reference source/rebuild archive `13050998049` is 1,095,193 bytes, SHA-256
+`1552446a8d266f53fe76f75f7b46be318ac2bc9a0ddc9686a490e5091d24d2f3`.
+The unchanged six-input source kit reproduced nine identical outputs and passed
+PCM, fault, cleanup and DLL-origin probes. Actual reference tools were CMake
+`4.4.5` and compiler `19.51.36260.0`. Five same-head diagnostic/frontend,
+protected-TEST and authored-helper metadata archives were also independently
+checked within their existing limits. Main/reference image `20261030.294.1`
+and the separately recorded auxiliary image versions are hosted Server evidence.
+
+Two separate same-head experiments failed. ASR run `41225667278` observed empty
+default common-data folders, an unobserved after-call constant and owned MSB4184
+in both states; DoNotVerify return/properties and the native cause remain unknown.
+No configure, compilation, inference or final source/tool seals passed. C7 v1 run
+`41225668722` refused its `legacy-baseline` protocol with `observed=[]` and
+unconfirmed retained-fixture cleanup. That empty list proves no recorded bounded
+legacy-open/attribute observation; it does not prove physical operations never
+occurred. Neither result closes R18 lock behavior, keeper loss, rights or native
+Windows 11 gates. Exact artifact identities and earlier checkpoints remain in
+the [checkpoint ledger](r19-frozen-checkpoint-20261031.json); R19 stays incomplete.
+
 ## Continuation and rollback
 
 Use the integrated workflow for the extracted runtime/native/ASR observations,

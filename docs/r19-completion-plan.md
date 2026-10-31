@@ -43,12 +43,12 @@ shortcut transaction or live migration is authorized by this plan.
 | Area | Established evidence | Remaining boundary |
 | --- | --- | --- |
 | Source candidate | Full Windows source/browser/package run at `e8a76d4`: 2,138 Python tests, one skip and 62 subtests; all five browser groups and extracted source-ZIP validation passed on the first attempt; all twelve downloaded sums/provenance checked | This is the source-style ZIP, not acceptance of the frozen runtime; the earlier `a079232`/`c18d07a` source failures remain recorded |
-| Extracted runtime | At `5c9db76`, 1,090 Windows contracts, freezing, native/C1/cold-slot, living-keeper and authored SQLite plain/interrupted-resumed/retained-WAL cases passed; root and peer checked downloaded metadata/source artifacts | C5 proves one plain retained-WAL copy under a living coordinator; no target activation, keeper loss, global/dynamic writer admission, production rights, real OCR/capture, general voices, ASR inference, full export or ordinary-user Windows 11 operation |
+| Extracted runtime | At `a1c5e92`, 1,150 Windows contracts without skips, freezing, native/C1/cold-slot, living-keeper and authored SQLite plain/interrupted-resumed/retained-WAL/populated-grammar cases passed; root and peer checked downloaded metadata/source artifacts | C5/C6 prove distinct authored retained-WAL and one local grammar-override copy under a living coordinator; no target activation, keeper loss, global/dynamic writer admission, production rights, real OCR/capture, general voices, ASR inference, full export or ordinary-user Windows 11 operation |
 | Static frontend | Chromium/Firefox comparison, authored persistent stores, worker/WASM OCR, retained chunks and frozen serving passed | Ordinary selected browser profile/extensions and update continuity need candidate evidence |
 | NTE | Owned self-contained bridge collected; exact runtime identity and actual bridge protocol with authored reflected assemblies passed | Actual UEExtractor/CUE4Parse/Oodle, real locres/voice formats and combined rights remain open |
 | Endfield / PRAGMATA | Actual prebuilt readers passed bounded private probes: Endfield empty/malformed input; selective x86 REE authored uncompressed PAK selection/rejection | Separate blocked manifests; neither reader is collected or approved for distribution/game use |
 | ZZZ | App-local Node/worker/WASM authored probe passed; actual reader transpilation/private preparation exists | Actual extractor/codec operation, corresponding source, custom terms and metadata rights remain open |
-| Host/data recovery | Guarded cold slots, living-keeper and `5c9db76` plain/interrupted-resumed/retained-WAL receipts verify bounded retained-process/continuous-lease behavior with actual source-entry contenders; protected-TEST probes also exist | No production global writer barrier, keeper-loss lifetime, interrupted-WAL, warm supervising updater or full populated-data/settings/browser/credential/schema continuity proof |
+| Host/data recovery | Guarded cold slots, living-keeper and `a1c5e92` plain/interrupted-resumed/retained-WAL/one populated local grammar receipts verify bounded retained-process/continuous-lease behavior with actual source-entry contenders; protected-TEST probes also exist | No production global writer barrier, keeper-loss lifetime, interrupted-WAL, warm supervising updater or full populated-data/settings/browser/credential/schema continuity proof; C7 v1 failed without a bounded legacy-open/attribute observation |
 | Unvoiced export | Actual source and `acc68be` frozen authored Half-Life index/language/mobile-export workers and the portable mobile parser pass for English and Simplified Chinese, with missing-pack rejection and previous-export preservation | Ordinary-user/installed-pack acceptance remains pending; no original speech binding is added |
 | Source original PCM | Source and bounded frozen authored Portal VPK/VCCD/event and selected English/French pack bindings pass actual index/language workers and in-process extraction/PCM validation; truncated PCM preserves prior output | Voiced mobile export still requires the unavailable general MP3 conversion path: bundle FFmpeg is disabled, the voice service requires decoder readiness and the transfer format requires MP3. Xiph FLAC and the quarantined FFmpeg DLL replay do not provide that encoder. MP3/composite/Bink decoding and installed-game/native coverage also remain pending |
 
@@ -100,11 +100,24 @@ At `5c9db76`, the distinct plain-copy C5 case passed with a real stopped
 16,512-byte transcript WAL and 32,768-byte SHM, main-only `favorite=false`
 versus full-set `favorite=true`, ten source-entry blocks and the same two-cohort
 preservation/cleanup protocol. C3/C4 again observed zero WAL/SHM. This closes
-only that retained-WAL fixture observation; populated grammar/export data,
+only that retained-WAL fixture observation; other populated data/export ledgers,
 settings continuity, keeper death, global admission and warm routing remain
 code/integration work. The same head's ASR source attempt still failed before
 configure: both Full CLR/x64 default-folder results were empty despite the
 two-alias binding. No specific Shell cause or native ASR success is inferred.
+At `a1c5e92`, run `41225646234` added the separate C6 observation: actual local
+HTTP/SQLite0→4, exactly one scoped4 copied row and fresh source-cohort4 readback
+while mocked external grammar state remains0. Ten source-entry blocks, two source
+cohorts, four retained writer signals and cleanup passed; C3/C4/C5 passed again.
+Root and peer verified the exact downloaded metadata and reference source/rebuild
+artifacts. This narrows one E1 fixture field; it does not close E1 or the global
+writer, settings/browser, real credential or other populated-ledger gates.
+The same head's ASR run `41225667278` still failed at common-data binding:
+after-call markers were unobserved with MSB4184 in both states, so the return and
+cause remain unknown. The separate C7 v1 run `41225668722` failed at
+`legacy-baseline`/`protocol-refused`, with no bounded operation observation and
+unconfirmed cleanup. Its empty observation list does not establish that physical
+opens/attribute changes never occurred. R18 lock and keeper-loss gates stay open.
 The [FFmpeg/Opus source replay](r19-game-codec-replay.md) is implemented as
 a separate manual build-host experiment. The [TTS-disabled ASR source
 experiment](r19-asr-source-experiment.md) is a distinct private binding variant,
@@ -345,6 +358,10 @@ export-volume work and previous complete libraries. Validate SQLite/WAL/schema
 sets, aliases and inventories. Cover interrupted/resumed copy, no space, locks,
 unknown schema and malformed/changed manifests; retain originals and failed
 targets. Do not perform an actual existing-installation migration in this phase.
+The `a1c5e92` C6 checkpoint verifies one authored populated local grammar override
+through actual HTTP/SQLite and fresh-source readback with mocked remote state0.
+It does not replace the remaining account/locale, export-ledger, outstanding-work,
+previous-library or general populated-data cases, nor create a global stop proof.
 
 **E2 — Verify protected TEST credentials on the candidate.** Preserve host
 locators and encrypted legacy fallback under the same Windows user. Use newly

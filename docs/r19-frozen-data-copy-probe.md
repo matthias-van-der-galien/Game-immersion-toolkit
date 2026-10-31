@@ -6,6 +6,9 @@ transcript and favorite write. It does not enable production migration or an
 installer. Its first frozen Windows execution at `ed153ab` passed; the downloaded
 source-bound receipt was independently reviewed. This closes only the fixed
 authored-copy observation described below.
+The later `a1c5e92` checkpoint also passed the separate populated local grammar
+fixture through actual frozen HTTP/SQLite; its distinct C6 scope is recorded
+below. The earlier plain, interrupted and retained-WAL observations remain intact.
 
 The existing [completion plan](r19-completion-plan.md) C2/C3/C4 gates remain
 open. The successful historical owned-host, cold-slot and
@@ -460,14 +463,15 @@ evidence. Rights and ordinary-user Windows 11 acceptance remain open, production
 and target activation remain false, and no installer was built. Exact identities
 are in the [checkpoint ledger](r19-frozen-checkpoint-20261031.json).
 
-## Separate populated grammar override (C6, native pending)
+## Separate populated grammar override (C6, verified fixture)
 
 `authored-data-copy-grammar` adds one local grammar choice to a separate fixed
 plain-copy experiment. It preserves the C3/C4/C5 controls, schema0 pins, Chinese
 rows and favorite checks. Its source contracts use the real reading service,
 normalizer and SQLite; the local HTTP/process doubles do not establish actual
-frozen middleware or Windows ownership. A new exact-candidate native execution
-and independently reviewed receipt are required.
+frozen middleware or Windows ownership. The exact-candidate native execution
+at `a1c5e92` and its independently reviewed receipt establish only the bounded
+fixture checkpoint below.
 
 Only this case selects the literal experimental `api-grammar` probe. The private
 selection is strict boolean, defaults false and refuses simultaneous WAL/grammar
@@ -577,6 +581,40 @@ pwsh -NoProfile -File scripts/probe-frozen-data-copy.ps1 `
   -Output output/checks/r19-frozen-data-copy-grammar.json
 ```
 
-That distinct grammar basename is also the case's default output. Workflow
-integration and its exact metadata allowlist remain separate; source-only
-results and retained earlier artifacts do not establish a native C6 pass.
+That distinct grammar basename is also the case's default output. The exact
+workflow invocation and metadata allowlist delivered the checkpoint below;
+source-only results and retained earlier artifacts do not establish another
+candidate's native C6 pass.
+
+## Verified C6 checkpoint at a1c5e92
+
+[Run 41225646234](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41225646234)
+at `a1c5e9261d1115ba80c73b0fb4d7dcea1c32ff89` passed 1,150 Windows
+contracts without skips (one warning, 128.30 seconds), then all selected frozen
+runtime observations including C3/C4/C5 and this separate C6 case. Root and peer
+verified artifact `13051759650`, 1,337,539 bytes, SHA-256
+`a57651dea4c9e2fdded92e3cdab91167ab84ddd28ad53a69595eed8525722333`.
+Its thirteen exact entries include the distinct 2,022-byte grammar receipt,
+SHA-256 `75254dc38d725a0df6c02c64ec2cce9555ad64649de3ac8d9b9b9bb5f1325721`.
+No database, account key, transcript or executable was downloaded.
+
+The actual reading/grammar HTTP routes, request/account middleware, local setter,
+normalizer and SQLite ran in the frozen API. The fixed external settings/analyzer
+transport still returned grammar proficiency0; real local state moved0→4. The
+separate semantic copy contained exactly one scoped choice at4, and a fresh
+original-source cohort returned4/localOverride=true. Unknown-rule404, exact
+schema pins `[0,0,0]`, two authored transcript rows, ten actual source-operation
+blocks, two source cohorts, four retained writer signals, unchanged pointer,
+stale-barrier refusal and explicit writer/lease/private-tree cleanup passed.
+The actual source-entry hash remains
+`f9469ccb51c99b814a615e66eb9b337e8b1ba8598a0fd794dbe420c8be4c8e9e`.
+
+C6 observed zero WAL/SHM and supplies no C5 WAL-persistence claim. In the same
+run, C3/C4 again observed zero WAL/SHM, while C5 separately passed its real
+16,512-byte transcript WAL/32,768-byte SHM contrast. Image `20261030.294.1` is
+hosted Server evidence. One authored local override does not establish real
+account/locale continuity, other populated/export ledgers, settings/browser
+mapping, target activation, global/dynamic writer admission, keeper loss, warm
+routing, rights or ordinary-user Windows 11 acceptance. Those gates remain
+open; the [checkpoint ledger](r19-frozen-checkpoint-20261031.json) preserves
+exact identities and earlier failures, and `r19_complete` remains false.
