@@ -71,7 +71,7 @@ check is a source-graph observation, not an operating-system network sandbox.
 
 ## Build and probe boundary
 
-### Common-data preflight and pending same-child contrast
+### Common-data preflight and pending OS-derived SystemDrive binding
 
 The later [14babb6 source attempt](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41210502791)
 failed during configuration. Its checksum-verified sanitized failure metadata
@@ -81,21 +81,40 @@ file-tracker-common-data and file-tracker-initialization roles. Unknown frames
 left each context incomplete. This identifies delivered format context; it does
 not establish the live CommonApplicationData result or a missing-variable cause.
 
-The next source implementation adds exactly two common-data states before
+The current source implementation retains exactly two common-data states before
 configuration. The first uses the existing filtered environment. The second
 removes case aliases of `PROGRAMDATA` and `ALLUSERSPROFILE` and binds those two
-keys to the current token's authoritative `FOLDERID_ProgramData` answer. It
-does not inherit those values from the parent, restore other variables or infer
-`SystemDrive`. There is no alternate combination or fallback folder.
+keys to the current token's authoritative `FOLDERID_ProgramData` answer. It also
+replaces case aliases of `SystemDrive` with one key derived from the shared OS
+Windows directory. It never inherits these values from the parent, changes
+`os.environ`, derives a drive from ProgramData or tries another combination.
+This intervention is source implemented and **native pending**.
+
+The typed [GetSystemWindowsDirectoryW call](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemwindowsdirectoryw)
+uses LPWSTR/UINT arguments, a UINT return and one fixed 32768-wide-character
+buffer. It requires a positive count below capacity, a terminating NUL and an
+exact UTF-16 code-unit count. Failure or malformed/truncated output refuses
+without retry or fallback. Raw local drive-letter syntax is checked before the
+existing root-first metadata guard; UNC/device/relative paths, dot components,
+ADS, trailing aliases, reserved names and controls refuse. The documented
+drive-only root answer is explicitly spelled as an absolute drive root before
+metadata; per-drive current-directory lookup is never used. No contents are read.
+[Microsoft defines SystemDrive](https://learn.microsoft.com/en-us/windows/deployment/usmt/usmt-recognized-environment-variables)
+as the Windows-folder drive name, rather than a directory root. Only that drive
+name enters the bound map; ambient SystemDrive/SystemRoot/WINDIR cannot select it.
 
 The original typed [Known Folder call](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)
 uses [DONT_VERIFY](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/ne-shlobj_core-known_folder_flag),
 without CREATE, and always frees a returned allocation. The private answer must
 be a canonical existing local directory. Raw components are checked before a
-root-first `lstat`/reparse walk reaches descendant metadata. No common-folder
-enumeration, file content, length, digest or raw path is retained. The OS answer
-is requeried and compared privately around both children and before final
-publication; a changed or unavailable answer refuses the attempt. These checks
+root-first `lstat`/reparse walk reaches descendant metadata. Common-folder
+contents are neither enumerated nor read; raw paths, lengths and digests are not
+published. Both OS answers
+are requeried and compared privately around both children and before final
+publication; a changed or unavailable answer refuses the attempt. Public labels
+are fixed `FOLDERID_ProgramData+GetSystemWindowsDirectoryW` and
+`PROGRAMDATA+ALLUSERSPROFILE+SystemDrive`, with only the existing aggregate
+stability enum. No path, drive letter, length or digest is public. These checks
 do not eliminate hostile concurrent filesystem replacement between checks.
 
 One fixed private project uses only documented
@@ -137,7 +156,7 @@ attempted even when an earlier cleanup step fails. A later successful step
 cannot clear that uncertainty.
 Configuration requires the bound child to report Full CLR/x64, nonempty folder
 and root, rootedness, and equality with both aliases. It then receives that same
-bound map. The new same-child DoNotVerify contrast remains **native pending**;
+bound map. The new OS-derived SystemDrive intervention remains **native pending**;
 local authored fixtures do not establish Windows behavior. Comparable fresh
 MSBuild children are not the later CL task's live process. Even repaired
 configuration would not prove framework binary/source correspondence, native
@@ -254,8 +273,35 @@ unknown value is published. The existing32KiB capture, two environments,
 process ownership and all default configuration requirements stay unchanged.
 Even a matched resource would be a format observation, not the private path,
 failing variable, exact binary/source correspondence or an approved repair.
-The new predicate is native pending; it adds no call, marker, environment,
-flag, source input or SystemDrive binding.
+That predicate itself added no call, marker, environment, flag or source input.
+
+At `e8416e9`, [run41229142323](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41229142323)
+failed in `common-data-bound` on attempt1. Root and peer independently verified
+artifact `13052702817` (2,058 bytes, SHA-256
+`2db0bb18a79576042bfc89a48952d2a3f009311af77386345621901880deb2f2`)
+and its sole failure JSON (5,401 bytes, SHA-256
+`3581d8869badf5fb071c2684e79228c74af61c623db0088b30ce1296dd1a2c4c`).
+Both Full CLR/x64 states matched the exact owned DNV `absolute-path-required`
+resource predicate, with default folder empty, return stage `not-observed`,
+MSB4184, four null DNV fields and no root result. The baseline alias comparisons
+were true and bound comparisons false; the OS common-data origin stayed verified.
+The actual job used image `20261021.278.1` and VS `18.11.12315.225`. Exact producer
+Git, Windows-CRLF manifest and initial CMake module variant were checked.
+PREPARED, complete final source/tool seals, configuration and native format
+probes were not delivered. This is a negative two-alias intervention with a
+matched error format, not proof of the private failing path or missing variable.
+It predates the SystemDrive intervention and supplies no native repair claim.
+
+The new binding preserves the fixed project, parser, byte/time bounds, retained
+owner, cleanup, tool pins and default acceptance gate. A successful default
+Full CLR/x64/nonempty/rooted/two-alias result is still required before configuring;
+DNV, resource and stage fields cannot authorize it. Portable authored tests cover
+the typed buffer boundary, raw-path and link/reparse refusal, explicit root
+spelling, alias replacement only in the bound map, unchanged baseline/process
+environment, two-child limit and private origin changes. They establish source
+contracts only. One new reviewed prepare/verify of the same 15 source files and
+an actual Windows attempt remain necessary. All acceptance and rights gates stay
+closed; a later improvement would not establish universal cause or full R19.
 
 ### Manual source build
 

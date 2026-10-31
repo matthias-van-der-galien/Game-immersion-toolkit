@@ -12,7 +12,7 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import stat
@@ -72,6 +72,9 @@ _BUILD_INSTANCE = None  # Actual generator argument/root and observed version, p
 _BUILD_TOOLCHAIN_SEAL = None  # Initial exact native tool inventory, never serialized here.
 _BUILD_CMAKE_VARIANT = None
 _BUILD_COMMON_DATA_PATH = None  # OS value stays private; never serialized/hashed.
+_BUILD_SYSTEM_DRIVE_ORIGIN = None  # Windows directory and drive name stay private.
+COMMON_DATA_ORIGIN = 'FOLDERID_ProgramData+GetSystemWindowsDirectoryW'
+COMMON_DATA_BINDING = 'PROGRAMDATA+ALLUSERSPROFILE+SystemDrive'
 COMMON_DATA_BYTES = 32768
 COMMON_DATA_SECONDS = 30
 COMMON_DATA_REASONS = frozenset({'none', 'not-run', 'process-rejected', 'invalid-markers',
@@ -1244,6 +1247,60 @@ def query_common_data_directory():
             free(pointer)
 
 
+def system_windows_directory(value):
+    """Accept one canonical local OS directory, without drive-relative CWD lookup."""
+    error = 'The OS system Windows directory is unavailable or not canonical.'
+    if type(value) is not str or not 1 <= len(value) <= 32767:
+        raise ValueError(error)
+    try:
+        units = len(value.encode('utf-16-le', errors='strict')) // 2
+    except UnicodeError:
+        raise ValueError(error) from None
+    if units > 32767 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError(error)
+    # The API documents C: for Windows installed at a drive root. Spell that
+    # root explicitly before Path touches metadata; C: must never mean a CWD.
+    if re.fullmatch(r'[A-Za-z]:', value):
+        value += '\\'
+    if not re.match(r'^[A-Za-z]:\\', value) or '/' in value:
+        raise ValueError(error)
+    parts = value[3:].split('\\') if len(value) > 3 else []
+    if any(not p or p in {'.', '..'} or p.endswith((' ', '.'))
+            or re.search(r'[<>:"|?*]', p)
+            or re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?', p, re.I)
+            for p in parts):
+        raise ValueError(error)
+    windows = PureWindowsPath(value)
+    if not windows.is_absolute() or str(windows) != value:
+        raise ValueError(error)
+    path = Path(value)
+    if not stat.S_ISDIR(diagnostic_file_info(path).st_mode):
+        raise ValueError(error)
+    return path, windows.drive
+
+
+def query_system_drive():
+    """Read the shared Windows directory once; no ambient or ProgramData fallback."""
+    import ctypes
+    error = 'The OS system Windows directory query is unavailable.'
+    if sys.platform != 'win32' or struct.calcsize('P') != 8:
+        raise ValueError(error)
+    try:
+        query = ctypes.WinDLL('kernel32', use_last_error=True).GetSystemWindowsDirectoryW
+        query.argtypes = [ctypes.POINTER(ctypes.c_wchar), ctypes.c_uint32]
+        query.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        count = query(buffer, len(buffer))
+        if type(count) is not int or not 0 < count < len(buffer) or buffer[count] != '\0':
+            raise ValueError(error)
+        value = buffer.value
+        if len(value.encode('utf-16-le', errors='strict')) // 2 != count:
+            raise ValueError(error)
+        return system_windows_directory(value)
+    except (OSError, AttributeError, UnicodeError, ValueError):
+        raise ValueError(error) from None
+
+
 def common_data_available(stream):
     if sys.platform != 'win32':  # Owned source-only pipe fixtures.
         import select
@@ -1401,8 +1458,8 @@ def common_data_markers(code, data, *, project=None):
 
 def safe_common_data_observation(value):
     if (type(value) is not dict or set(value) != {'origin', 'binding', 'origin_stable', 'baseline', 'bound'}
-            or type(value['origin']) is not str or value['origin'] != 'FOLDERID_ProgramData'
-            or type(value['binding']) is not str or value['binding'] != 'PROGRAMDATA+ALLUSERSPROFILE'
+            or type(value['origin']) is not str or value['origin'] != COMMON_DATA_ORIGIN
+            or type(value['binding']) is not str or value['binding'] != COMMON_DATA_BINDING
             or type(value['origin_stable']) is not str
             or value['origin_stable'] not in {'not-checked', 'verified', 'changed', 'unavailable'}):
         return None
@@ -1445,31 +1502,35 @@ def safe_common_data_observation(value):
 
 
 def check_common_data_origin():
-    if _BUILD_COMMON_DATA_PATH is None:
+    if _BUILD_COMMON_DATA_PATH is None and _BUILD_SYSTEM_DRIVE_ORIGIN is None:
         return
     value = _BUILD_ENVIRONMENT_OBSERVATION['common_data']
     try:
-        current = query_common_data_directory()
+        if _BUILD_COMMON_DATA_PATH is None or _BUILD_SYSTEM_DRIVE_ORIGIN is None:
+            raise ValueError('An OS origin is unavailable.')
+        current = query_common_data_directory(), query_system_drive()
     except Exception:
         value['origin_stable'] = 'unavailable'
         raise ValueError('The OS common-data origin could not be reverified.') from None
-    if current != _BUILD_COMMON_DATA_PATH:
+    if current != (_BUILD_COMMON_DATA_PATH, _BUILD_SYSTEM_DRIVE_ORIGIN):
         value['origin_stable'] = 'changed'
         raise ValueError('The OS common-data origin changed.')
     value['origin_stable'] = 'verified'
 
 
 def common_data_environment(output, roots, initial, env):
-    global _BUILD_COMMON_DATA_PATH
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE',
+    global _BUILD_COMMON_DATA_PATH, _BUILD_SYSTEM_DRIVE_ORIGIN
+    value = {'origin': COMMON_DATA_ORIGIN, 'binding': COMMON_DATA_BINDING,
         'origin_stable': 'not-checked', 'baseline': common_data_result(), 'bound': common_data_result()}
     _BUILD_ENVIRONMENT_OBSERVATION['common_data'] = value
     build_phase('common-data-origin')
     try:
-        _BUILD_COMMON_DATA_PATH = query_common_data_directory()
+        common = query_common_data_directory()
+        windows = query_system_drive()
     except Exception:
         value['origin_stable'] = 'unavailable'
         raise ValueError('The OS common-data origin is unavailable.') from None
+    _BUILD_COMMON_DATA_PATH, _BUILD_SYSTEM_DRIVE_ORIGIN = common, windows
     member = 'Current/Bin/amd64/MSBuild.exe'
     executable = Path(roots['msbuild']) / member
     def verify_executable():
@@ -1482,8 +1543,9 @@ def common_data_environment(output, roots, initial, env):
     with project.open('x', encoding='utf-8', newline='\n') as handle:
         handle.write(COMMON_DATA_PROJECT)
     command = [executable, project, '/nologo', '/noautoresponse', '/nr:false', '/m:1', '/v:minimal']
-    bound = {k: v for k, v in env.items() if k.casefold() not in {'programdata', 'allusersprofile'}}
+    bound = {k: v for k, v in env.items() if k.casefold() not in {'programdata', 'allusersprofile', 'systemdrive'}}
     bound.update(PROGRAMDATA=str(_BUILD_COMMON_DATA_PATH), ALLUSERSPROFILE=str(_BUILD_COMMON_DATA_PATH))
+    bound['SystemDrive'] = _BUILD_SYSTEM_DRIVE_ORIGIN[1]
     for name, child_env in (('baseline', env), ('bound', bound)):
         build_phase('common-data-' + name)
         check_common_data_origin()
@@ -2251,7 +2313,7 @@ def reject_parent_imports(output):
 
 def build(output, tool_roots, vs_root, inputs, cmake_root=None, vs_version=None, vswhere=None):
     global _BUILD_SOURCE_COMMIT, _BUILD_CMAKE_OBSERVATION, _BUILD_ENVIRONMENT_OBSERVATION, _BUILD_VS_VERSION, _BUILD_TOOL_ROOTS, _BUILD_PROPERTIES, _BUILD_INSTANCE, _BUILD_TOOLCHAIN_SEAL, _BUILD_CMAKE_VARIANT
-    global _BUILD_COMMON_DATA_PATH
+    global _BUILD_COMMON_DATA_PATH, _BUILD_SYSTEM_DRIVE_ORIGIN
     build_phase('build-preflight')
     _BUILD_SOURCE_COMMIT = None
     _BUILD_CMAKE_OBSERVATION = None
@@ -2263,6 +2325,7 @@ def build(output, tool_roots, vs_root, inputs, cmake_root=None, vs_version=None,
     _BUILD_TOOLCHAIN_SEAL = None
     _BUILD_CMAKE_VARIANT = None
     _BUILD_COMMON_DATA_PATH = None
+    _BUILD_SYSTEM_DRIVE_ORIGIN = None
     try:
         return _build(output, tool_roots, vs_root, inputs, cmake_root, vs_version, vswhere)
     except Exception as error:

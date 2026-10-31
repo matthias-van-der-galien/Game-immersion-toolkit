@@ -45,6 +45,7 @@ def common_environment_fixture(module, tmp_path, monkeypatch):
     initial = {'msbuild': {'Current/Bin/amd64/MSBuild.exe': module.attributes(executable.read_bytes())}}
     module._BUILD_ENVIRONMENT_OBSERVATION = {'vc_targets': None, 'parent_import_categories': []}
     monkeypatch.setattr(module, 'query_common_data_directory', lambda: folder)
+    monkeypatch.setattr(module, 'query_system_drive', lambda: (root / 'os-windows', 'Z:'))
     return output, folder, executable, {'msbuild': str(tools)}, initial
 
 
@@ -175,7 +176,7 @@ def test_common_data_owned_dnv_resource_is_an_exact_partial_format_observation(m
     assert value['dnv_error_resource'] == 'absolute-path-required' and value['msbuild_codes'] == ['MSB4184']
     assert value['status'] == 'rejected' and value['folder'] == 'empty' and value['do_not_verify_call'] == 'not-observed'
     assert all(v is None for v in value['do_not_verify'].values())
-    observation = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE',
+    observation = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING,
         'origin_stable': 'verified', 'baseline': module.common_data_result(), 'bound': value}
     assert module.safe_common_data_observation(observation) == observation
     assert str(project) not in json.dumps(observation) and 'The expression' not in json.dumps(observation)
@@ -231,7 +232,7 @@ def test_common_data_matching_dnv_resource_never_authorizes_empty_default(module
 
 @pytest.mark.parametrize('invalid', [True, [], 'private-resource', 'path-empty', 'not-run'])
 def test_common_data_public_resource_enum_rejects_unknown_types_and_states(module, invalid):
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+    value = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING, 'origin_stable': 'verified',
         'baseline': module.common_data_result(), 'bound': module.common_data_result('process-rejected')}
     value['bound']['dnv_error_resource'] = invalid
     assert module.safe_common_data_observation(value) is None
@@ -242,7 +243,7 @@ def test_common_data_public_resource_match_requires_coherent_partial_context(mod
     project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
     value = module.common_data_markers(1, common_markers().splitlines(keepends=True)[0] + common_dnv_error(project), project=project)
     value[field] = replacement
-    observation = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE',
+    observation = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING,
         'origin_stable': 'verified', 'baseline': module.common_data_result(), 'bound': value}
     assert module.safe_common_data_observation(observation) is None
 
@@ -282,7 +283,7 @@ def test_common_data_stage_and_code_survive_partial_failure_without_granting_acc
 @pytest.mark.parametrize('codes', ['MSB4184', ('MSB4184',), [True], ['private'],
     ['MSB4186','MSB4184'], ['MSB4184','MSB4184'], ['MSB4184']*4])
 def test_common_data_public_code_projection_requires_exact_sorted_unique_allowlist(module, codes):
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+    value = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING, 'origin_stable': 'verified',
         'baseline': module.common_data_result(), 'bound': module.common_data_result('invalid-markers')}
     value['bound']['msbuild_codes'] = codes
     assert module.safe_common_data_observation(value) is None
@@ -290,7 +291,7 @@ def test_common_data_public_code_projection_requires_exact_sorted_unique_allowli
 
 @pytest.mark.parametrize('stage', [True, None, [], 'private', 'threw'])
 def test_common_data_public_stage_projection_has_no_inferred_failure_or_raw_context(module, stage):
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+    value = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING, 'origin_stable': 'verified',
         'baseline': module.common_data_result(), 'bound': module.common_data_result('invalid-markers')}
     value['bound']['do_not_verify_call'] = stage
     assert module.safe_common_data_observation(value) is None
@@ -344,7 +345,7 @@ def test_common_data_unverified_observation_never_replaces_default_acceptance(mo
     {'empty': None, 'rooted': False, 'programdata_equal': False, 'allusersprofile_equal': False},
     {'empty': False, 'rooted': True, 'programdata_equal': True, 'allusersprofile_equal': True, 'raw': 'private-folder'}])
 def test_common_data_contrast_public_projection_refuses_raw_unknown_or_partial_types(module, malformed):
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+    value = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING, 'origin_stable': 'verified',
         'baseline': module.common_data_result(), 'bound': module.common_data_result()}
     value['bound']['do_not_verify'] = malformed
     assert module.safe_common_data_observation(value) is None
@@ -353,7 +354,9 @@ def test_common_data_contrast_public_projection_refuses_raw_unknown_or_partial_t
 def test_common_data_two_states_bind_only_authoritative_aliases_and_sealed_x64_tool(module, tmp_path, monkeypatch):
     output, folder, executable, roots, initial = common_environment_fixture(module, tmp_path, monkeypatch)
     calls = []
+    original_process_env = dict(module.os.environ)
     env = {'PATH': 'fixed', 'ProgramData': 'untrusted baseline', 'allusersprofile': 'other baseline',
+        'SYSTEMDRIVE': 'untrusted drive', 'systemDrive': 'other drive',
         'ImportDirectoryBuildProps': 'false', 'MSBUILDDISABLENODEREUSE': '1'}
     original = dict(env)
     def capture(command, child_env, cwd):
@@ -362,16 +365,63 @@ def test_common_data_two_states_bind_only_authoritative_aliases_and_sealed_x64_t
     monkeypatch.setattr(module, 'capture_common_data', capture)
     bound = module.common_data_environment(output, roots, initial, env)
     assert len(calls) == 2 and calls[0][1] == original and env == original
-    assert bound == {k: v for k, v in original.items() if k not in {'ProgramData', 'allusersprofile'}} | {
-        'PROGRAMDATA': str(folder), 'ALLUSERSPROFILE': str(folder)}
-    assert 'SystemDrive' not in bound
+    process_env_unchanged = dict(module.os.environ) == original_process_env
+    assert process_env_unchanged, 'The process environment changed.'
+    assert bound == {k: v for k, v in original.items() if k not in {'ProgramData', 'allusersprofile', 'SYSTEMDRIVE', 'systemDrive'}} | {
+        'PROGRAMDATA': str(folder), 'ALLUSERSPROFILE': str(folder), 'SystemDrive': 'Z:'}
+    assert [k for k in bound if k.casefold() == 'systemdrive'] == ['SystemDrive']
     assert calls[0][0] == calls[1][0] == [executable, output / 'PRIVATE-COMMON-DATA.proj',
         '/nologo', '/noautoresponse', '/nr:false', '/m:1', '/v:minimal']
     assert calls[0][2] == calls[1][2] == output
     assert (output / 'PRIVATE-COMMON-DATA.proj').read_text() == module.COMMON_DATA_PROJECT
     observed = module.safe_build_environment_observation()['common_data']
     assert observed['origin_stable'] == 'verified' and observed['bound']['runtime'] == 'full'
-    assert str(folder) not in json.dumps(observed)
+    assert observed['origin'] == 'FOLDERID_ProgramData+GetSystemWindowsDirectoryW'
+    assert observed['binding'] == 'PROGRAMDATA+ALLUSERSPROFILE+SystemDrive'
+    assert str(folder) not in json.dumps(observed) and 'Z:' not in json.dumps(observed)
+
+
+@pytest.mark.parametrize('mutation', ['directory', 'drive', 'unavailable'])
+@pytest.mark.parametrize('boundary', ['before-baseline', 'after-baseline', 'before-bound', 'after-bound', 'final'])
+def test_common_data_system_origin_mutation_refuses_at_existing_boundaries(module, tmp_path, monkeypatch, mutation, boundary):
+    output, _folder, _executable, roots, initial = common_environment_fixture(module, tmp_path, monkeypatch)
+    origin = tmp_path.resolve() / 'os-windows', 'Z:'
+    queries, children = [], []
+    change_at = {'before-baseline': 2, 'after-baseline': 3, 'before-bound': 4, 'after-bound': 5, 'final': 6}[boundary]
+    def query():
+        queries.append(True)
+        if len(queries) < change_at: return origin
+        if mutation == 'unavailable': raise OSError('private OS query failure')
+        return (origin[0].parent, origin[1]) if mutation == 'directory' else (origin[0], 'Y:')
+    monkeypatch.setattr(module, 'query_system_drive', query)
+    def capture(*_):
+        children.append(True)
+        return 0, common_markers()
+    monkeypatch.setattr(module, 'capture_common_data', capture)
+    with pytest.raises(ValueError, match='OS common-data origin') as error:
+        module.common_data_environment(output, roots, initial, {})
+        module.check_common_data_origin()  # The existing final-use check, without configuring a native build.
+    assert len(children) == {'before-baseline': 0, 'after-baseline': 1, 'before-bound': 1, 'after-bound': 2, 'final': 2}[boundary]
+    assert len(queries) == change_at
+    value = module.safe_build_environment_observation()['common_data']
+    assert value['origin_stable'] == ('unavailable' if mutation == 'unavailable' else 'changed')
+    assert 'private' not in str(error.value) and 'Y:' not in json.dumps(value)
+
+
+def test_common_data_initial_system_origin_failure_has_no_child_retry_or_partial_origin(module, tmp_path, monkeypatch):
+    output, _folder, _executable, roots, initial = common_environment_fixture(module, tmp_path, monkeypatch)
+    calls = []
+    def query():
+        calls.append(True)
+        raise OSError('private unavailable Windows directory')
+    monkeypatch.setattr(module, 'query_system_drive', query)
+    monkeypatch.setattr(module, 'capture_common_data', lambda *_: pytest.fail('unavailable origin must not start a child'))
+    with pytest.raises(ValueError, match='OS common-data origin is unavailable'):
+        module.common_data_environment(output, roots, initial, {'SystemDrive': 'ambient forbidden fallback'})
+    module.check_common_data_origin()
+    assert calls == [True]
+    assert module._BUILD_COMMON_DATA_PATH is None and module._BUILD_SYSTEM_DRIVE_ORIGIN is None
+    assert module.safe_build_environment_observation()['common_data']['origin_stable'] == 'unavailable'
 
 
 @pytest.mark.parametrize('changes', [{'runtime': 'Core'}, {'runtime': 'Mono'}, {'x64': 'False'},
@@ -454,6 +504,125 @@ def test_common_data_link_and_reparse_ancestors_refuse_before_leaf_metadata(modu
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, 'lstat', reparse)
     with pytest.raises(ValueError): module.common_data_directory(str(leaf))
+
+
+@pytest.mark.parametrize('value', [r'C:\Windows', 'C:\\系統\\Windows', 'C:\\W\U0001f600', 'C:', 'C:\\'])
+def test_system_windows_directory_typed_query_uses_exact_utf16_count_and_explicit_root(module, monkeypatch, value):
+    import ctypes
+    calls, metadata = [], []
+    def query(buffer, capacity):
+        calls.append(capacity)
+        assert len(buffer) == capacity == 32768
+        buffer.value = value
+        return len(value.encode('utf-16-le')) // 2
+    def dll(name, **kwargs):
+        assert name == 'kernel32' and kwargs == {'use_last_error': True}
+        return SimpleNamespace(GetSystemWindowsDirectoryW=query)
+    monkeypatch.setattr(ctypes, 'WinDLL', dll, raising=False)
+    monkeypatch.setattr(module.sys, 'platform', 'win32')
+    def info(path):
+        metadata.append(str(path))
+        return SimpleNamespace(st_mode=module.stat.S_IFDIR)
+    monkeypatch.setattr(module, 'diagnostic_file_info', info)
+    path, drive = module.query_system_drive()
+    expected = value + '\\' if value == 'C:' else value
+    assert str(path) == expected and drive == 'C:' and metadata == [expected]
+    assert calls == [32768]
+    assert query.argtypes == [ctypes.POINTER(ctypes.c_wchar), ctypes.c_uint32]
+    assert query.restype is ctypes.c_uint32
+
+
+@pytest.mark.parametrize('outcome', ['zero', 'capacity', 'over-capacity', 'negative', 'bool', 'null', 'empty', 'embedded-null',
+    'short-count', 'long-count', 'non-terminator', 'surrogate', 'code-point-count', 'native-error', 'unavailable'])
+def test_system_windows_directory_bad_native_buffer_refuses_once_without_metadata_or_fallback(module, monkeypatch, outcome):
+    import ctypes
+    calls = []
+    def query(buffer, capacity):
+        calls.append(True)
+        value = 'C:\\Windows'
+        if outcome == 'native-error': raise OSError('private native query error')
+        if outcome == 'surrogate': value = 'C:\\bad\ud800'
+        if outcome == 'code-point-count': value = 'C:\\W\U0001f600'
+        if outcome == 'empty': value = ''
+        if outcome == 'embedded-null': value = 'C:\\bad\0hidden'
+        buffer.value = value
+        count = len(value)
+        if outcome == 'empty': count = 1
+        if outcome == 'zero': count = 0
+        if outcome == 'capacity': count = capacity
+        if outcome == 'over-capacity': count = capacity + 1
+        if outcome == 'negative': count = -1
+        if outcome == 'bool': count = True
+        if outcome == 'null': count = None
+        if outcome == 'short-count': count -= 1
+        if outcome == 'long-count': count += 1
+        if outcome == 'non-terminator': buffer[count] = 'X'
+        return count
+    def dll(*_args, **_kwargs):
+        if outcome == 'unavailable': raise OSError('private unavailable API')
+        return SimpleNamespace(GetSystemWindowsDirectoryW=query)
+    monkeypatch.setattr(ctypes, 'WinDLL', dll, raising=False)
+    monkeypatch.setattr(module.sys, 'platform', 'win32')
+    monkeypatch.setenv('SystemDrive', 'F:')
+    monkeypatch.setenv('SystemRoot', 'F:\\untrusted')
+    monkeypatch.setenv('WINDIR', 'F:\\untrusted')
+    monkeypatch.setattr(module, 'diagnostic_file_info', lambda *_: pytest.fail('invalid native result reached metadata'))
+    with pytest.raises(ValueError, match='OS system Windows directory query is unavailable') as error:
+        module.query_system_drive()
+    assert calls == ([] if outcome == 'unavailable' else [True])
+    assert 'private' not in str(error.value) and 'F:' not in str(error.value)
+
+
+@pytest.mark.parametrize('platform,pointer_bytes', [('darwin', 8), ('win32', 4)])
+def test_system_windows_directory_query_requires_windows_x64_before_api_access(module, monkeypatch, platform, pointer_bytes):
+    import ctypes
+    monkeypatch.setattr(module.sys, 'platform', platform)
+    monkeypatch.setattr(module.struct, 'calcsize', lambda _format: pointer_bytes)
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *_args, **_kwargs: pytest.fail('unsupported host reached the Windows API'), raising=False)
+    with pytest.raises(ValueError, match='OS system Windows directory query is unavailable'):
+        module.query_system_drive()
+
+
+@pytest.mark.parametrize('value', [None, '', r'Windows', r'C:Windows', r'\Windows', r'\\server\Windows',
+    r'\\?\C:\Windows', r'\\.\C:\Windows', r'C:/Windows', 'C:\\Windows\\', r'C:\\Windows',
+    r'C:\.\Windows', r'C:\child\..\Windows', r'C:\Windows.', r'C:\Windows ', r'C:\Windows:stream',
+    r'C:\NUL', r'C:\COM¹.txt', r'C:\LPT9', 'C:\\bad\x00name', 'C:\\bad\nname', 'C:\\bad\ud800',
+    'C:\\' + 'x' * 32765])
+def test_system_windows_directory_raw_layout_refuses_before_metadata(module, monkeypatch, value):
+    monkeypatch.setattr(module, 'diagnostic_file_info', lambda *_: pytest.fail('noncanonical Windows path reached metadata'))
+    with pytest.raises(ValueError): module.system_windows_directory(value)
+
+
+def test_system_windows_directory_requires_directory_metadata(module, monkeypatch):
+    monkeypatch.setattr(module, 'diagnostic_file_info', lambda *_: SimpleNamespace(st_mode=module.stat.S_IFREG))
+    with pytest.raises(ValueError): module.system_windows_directory(r'C:\Windows')
+
+
+@pytest.mark.parametrize('kind', ['link', 'reparse'])
+def test_system_windows_directory_reuses_root_first_guard_before_descendant_metadata(module, tmp_path, monkeypatch, kind):
+    root = tmp_path.resolve()
+    target = root / 'target'; target.mkdir(); (target / 'leaf').mkdir()
+    link = root / 'link'
+    if kind == 'link':
+        try: link.symlink_to(target, target_is_directory=True)
+        except OSError:
+            command = shutil.which('cmd.exe') if module.os.name == 'nt' else None
+            if not command: pytest.skip('Owned directory links are unavailable on this host.')
+            made = module.subprocess.run([command, '/d', '/c', 'mklink', '/J', str(link), str(target)], capture_output=True, timeout=10)
+            if made.returncode: pytest.skip('Owned directory links and junctions are unavailable on this host.')
+    else: link.mkdir()
+    leaf, original = link / 'leaf', Path.lstat
+    # Only adapt the authored Windows spelling to this host's owned fixture.
+    # Production keeps pathlib's actual Windows path and guard unchanged.
+    monkeypatch.setattr(module, 'Path', lambda value: leaf if str(value) == r'C:\Windows' else Path(value))
+    def guarded(path, *args, **kwargs):
+        if path == leaf: pytest.fail('linked/reparse descendant metadata accessed')
+        if kind == 'reparse' and path == link:
+            return SimpleNamespace(st_mode=module.stat.S_IFDIR, st_file_attributes=0x400)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'lstat', guarded)
+    with pytest.raises(ValueError, match='Linked diagnostic inputs'):
+        module.system_windows_directory(r'C:\Windows')
 
 
 @pytest.mark.parametrize('outcome', ['success', 'hresult', 'invalid', 'null'])
@@ -586,7 +755,7 @@ def test_common_data_all_cleanup_attempts_survive_bootstrap_and_combined_failure
 @pytest.mark.parametrize('field,malformed', [('origin', 'private'), ('binding', []), ('origin_stable', {}),
     ('baseline', {'private': 'raw'}), ('bound', None)])
 def test_common_data_public_projection_drops_unknown_structure(module, field, malformed):
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+    value = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING, 'origin_stable': 'verified',
         'baseline': module.common_data_result(), 'bound': module.common_data_result()}
     value[field] = malformed
     assert module.safe_common_data_observation(value) is None
@@ -594,7 +763,7 @@ def test_common_data_public_projection_drops_unknown_structure(module, field, ma
 
 @pytest.mark.parametrize('field', list(('status', 'reason', 'runtime', 'folder', 'root', 'x64', 'rooted', 'programdata_equal', 'allusersprofile_equal')))
 def test_common_data_public_projection_drops_raw_marker_context(module, field):
-    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+    value = {'origin': module.COMMON_DATA_ORIGIN, 'binding': module.COMMON_DATA_BINDING, 'origin_stable': 'verified',
         'baseline': module.common_data_result(), 'bound': module.common_data_result()}
     value['bound'][field] = ['private-path-or-environment']
     assert module.safe_common_data_observation(value) is None
