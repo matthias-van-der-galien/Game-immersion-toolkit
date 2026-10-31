@@ -14,7 +14,7 @@ on:
       source_replay:
         description: Run one separate quarantined R19 experiment only
         type: choice
-        options: [none, ffmpeg-opus, sherpa-asr, msvc-redist-census]
+        options: [none, ffmpeg-opus, sherpa-asr, msvc-redist-census, legacy-lock-attribute]
         default: none
       observer_contract_only:
         description: Run only PowerShell observer and guardian contracts (no runtime build)
@@ -41,7 +41,7 @@ jobs:
           R19_CODEC_ONLY: ${{ inputs.codec_source_only && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          case "$R19_SOURCE_REPLAY" in none|ffmpeg-opus|sherpa-asr|msvc-redist-census) ;; *) exit 1 ;; esac
+          case "$R19_SOURCE_REPLAY" in none|ffmpeg-opus|sherpa-asr|msvc-redist-census|legacy-lock-attribute) ;; *) exit 1 ;; esac
           selected=0
           if [[ "$R19_SOURCE_REPLAY" != none ]]; then selected=$((selected+1)); fi
           if [[ "$R19_OBSERVER_ONLY" == true ]]; then selected=$((selected+1)); fi
@@ -108,6 +108,147 @@ jobs:
             output/checks/MSVC-REDIST-CENSUS.json
             output/checks/MSVC-REDIST-CI-BINDING.json
           if-no-files-found: ignore
+          retention-days: 7
+  legacy-lock-attribute:
+    needs: validate-selection
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_replay == 'legacy-lock-attribute' }}
+    # Source-only zero-writer mechanism, never runtime/recovery acceptance.
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Observe prerequisites and audit before test preparation
+        shell: pwsh
+        run: |
+          npm run dev:doctor
+          if ($LASTEXITCODE -notin @(0, 2)) { throw 'Invalid mechanism preflight.' }
+          npm run audit:public
+          if ($LASTEXITCODE -ne 0) { throw 'Public mechanism source audit failed.' }
+      - uses: actions/setup-python@v7
+        id: attribute-python
+        with:
+          python-version: '3.12.10'
+      - name: Prepare the exactly locked source-test subset
+        shell: pwsh
+        env:
+          R19_ATTRIBUTE_BASE_PYTHON: ${{ steps.attribute-python.outputs.python-path }}
+        run: |
+          $names = @('pytest', 'iniconfig', 'packaging', 'pluggy', 'Pygments', 'colorama')
+          $locked = @(Get-Content requirements.lock.txt | Where-Object { ($_ -split '==')[0] -in $names })
+          if ($locked.Count -ne $names.Count -or @($locked | Where-Object { $_ -notmatch '^[A-Za-z0-9_.-]+==[A-Za-z0-9.+!-]+$' }).Count) { throw 'Pytest subset differs from the exact application lock.' }
+          $requirements = Join-Path $env:RUNNER_TEMP 'r19-attribute-requirements.txt'
+          $locked | Set-Content -LiteralPath $requirements -Encoding utf8NoBOM
+          $environment = Join-Path $env:RUNNER_TEMP 'r19-attribute-venv'
+          & $env:R19_ATTRIBUTE_BASE_PYTHON -m venv $environment
+          if ($LASTEXITCODE -ne 0) { throw 'Source test environment creation failed.' }
+          $python = Join-Path $environment 'Scripts/python.exe'
+          & $python -m pip install --disable-pip-version-check --only-binary=:all: --no-deps -r $requirements
+          if ($LASTEXITCODE -ne 0) { throw 'Exact source test subset unavailable.' }
+          & $python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Source test subset is inconsistent.' }
+          "R19_ATTRIBUTE_PYTHON=$python" >> $env:GITHUB_ENV
+      - name: Check authored contracts before the native mechanism
+        shell: pwsh
+        run: |
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          $env:PYTEST_ADDOPTS = ''
+          & $env:R19_ATTRIBUTE_PYTHON -I -B -c "import struct,sys; assert sys.version_info[:3] == (3,12,10) and struct.calcsize('P') == 8"
+          if ($LASTEXITCODE -ne 0) { throw 'Selected source interpreter differs.' }
+          & $env:R19_ATTRIBUTE_PYTHON -B -m pytest --noconftest -q backend/tests/test_runtime_lock_attribute_probe.py
+          if ($LASTEXITCODE -ne 0) { throw 'Authored mechanism contracts failed.' }
+      - name: Bind and validate the zero-writer native observation
+        id: attribute
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import {spawnSync, execFileSync} from 'node:child_process';
+          import {mkdirSync, writeFileSync, appendFileSync, lstatSync, openSync, fstatSync, readSync, closeSync} from 'node:fs';
+          import {resolve, dirname} from 'node:path';
+          import {captureSourceSnapshot} from './scripts/check-evidence.mjs';
+          const refuse = () => {throw new Error('Fixed mechanism validation refused.');};
+          const clean = () => execFileSync('git',['status','--porcelain=v1','--untracked-files=all'],{encoding:'utf8',maxBuffer:65536}).trim() === '';
+          const inspect = (path,missing=false) => {
+            const absolute=resolve(path), chain=[];
+            for (let p=absolute;;p=dirname(p)) {chain.unshift(p);if (dirname(p) === p) break;}
+            let info;
+            for (const p of chain) {
+              try {info=lstatSync(p);} catch(error) {if (missing && p === absolute && error.code === 'ENOENT') return null;refuse();}
+              if (info.isSymbolicLink() || (p !== absolute && !info.isDirectory())) refuse();
+            }
+            return info;
+          };
+          const readPublished = (path,expected) => {
+            const ordinary=info=>info.isFile() && info.nlink === 1 && info.size === expected.length;
+            if (!ordinary(inspect(path))) refuse();
+            const descriptor=openSync(path,'r');
+            try {
+              if (!ordinary(fstatSync(descriptor))) refuse();
+              const buffer=Buffer.alloc(expected.length+1);let used=0;
+              while (used < buffer.length) {const count=readSync(descriptor,buffer,used,buffer.length-used,used);if (!count) break;used+=count;}
+              if (used !== expected.length || !buffer.subarray(0,used).equals(expected) || !ordinary(fstatSync(descriptor))) refuse();
+            } finally {closeSync(descriptor);}
+            if (!ordinary(inspect(path))) refuse();
+          };
+          try {
+            const before = captureSourceSnapshot();
+            if (before.sourceStatus !== 'available' || before.head !== process.env.GITHUB_SHA || !clean()) refuse();
+            const child = spawnSync(process.env.R19_ATTRIBUTE_PYTHON,['-I','-B','backend/runtime_lock_attribute_probe.py'],{encoding:'utf8',timeout:180000,maxBuffer:8192,windowsHide:true});
+            const after = captureSourceSnapshot();
+            if (after.sourceStatus !== 'available' || before.head !== after.head || before.sourceHash !== after.sourceHash || !clean() || child.error || child.signal || ![0,2].includes(child.status)) refuse();
+            let value; try {value=JSON.parse(child.stdout);} catch {refuse();}
+            const fixed={schema:'proxy-r19-legacy-lock-attribute-mechanism-v1',scope:'authored-local-ntfs-no-writers-mechanism',candidate_data_writers:0,production_allowed:false,keeper_loss_acceptance:false,rights_approval:false,native_windows_11_acceptance:'unavailable',r19_complete:false};
+            const keys=[...Object.keys(fixed),'status','phase','failure','legacy_source_sha256','observed','timestamp_equalities','cleanup'].sort();
+            if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(keys)) refuse();
+            for (const [key,expected] of Object.entries(fixed)) if (value[key] !== expected) refuse();
+            const phases=['fixture','legacy-baseline','lease-start','arm','live-clear','rearm','owner-loss','post-loss','test-restore','restored','cleanup','complete'];
+            const failures=['none','unsupported-host','fixture-refused','native-call-failed','protocol-refused','source-changed','preservation-refused','legacy-outcome-differed','owned-cleanup-unconfirmed','unexpected-failure'];
+            const hashes=['c0cb1b456c029e8cb843501ffaf17cf2b054bdfecad8e788dd35d9a85ae2d3ef','f9469ccb51c99b814a615e66eb9b337e8b1ba8598a0fd794dbe420c8be4c8e9e'];
+            const observations=['writable-open','exclusive-held','arm','live-clear','rearm','genuine-owner-signaled-and-closed','post-loss-readonly-refused','restored-open'];
+            const times=['arm','live-clear','rearm','post-loss','test-restore','restored'];
+            const fields=['access_equal','change_equal','creation_equal','write_equal'];
+            if (!['failed','mechanism-observed'].includes(value.status) || !phases.includes(value.phase) || !failures.includes(value.failure) || !['unconfirmed-fixture-retained','owned-handles-closed-fixture-retained'].includes(value.cleanup) || !(value.legacy_source_sha256 === null || hashes.includes(value.legacy_source_sha256))) refuse();
+            if (!Array.isArray(value.observed) || value.observed.length > observations.length || JSON.stringify(value.observed) !== JSON.stringify(observations.slice(0,value.observed.length))) refuse();
+            const equalities=value.timestamp_equalities;
+            if (!equalities || typeof equalities !== 'object' || Array.isArray(equalities) || Object.keys(equalities).some(key=>!times.includes(key))) refuse();
+            for (const item of Object.values(equalities)) if (!item || typeof item !== 'object' || Array.isArray(item) || JSON.stringify(Object.keys(item).sort()) !== JSON.stringify(fields) || Object.values(item).some(v=>typeof v !== 'boolean')) refuse();
+            const passed=value.status === 'mechanism-observed';
+            if (child.status !== (passed ? 0 : 2)) refuse();
+            if (passed && (value.phase !== 'complete' || value.failure !== 'none' || value.cleanup !== 'owned-handles-closed-fixture-retained' || !hashes.includes(value.legacy_source_sha256) || value.observed.length !== observations.length || Object.keys(equalities).length !== times.length || Object.values(equalities).some(item=>!item.creation_equal || !item.write_equal))) refuse();
+            const binding={schema:'proxy-r19-legacy-lock-attribute-ci-binding-v1',source_commit:before.head,source_before_sha256:before.sourceHash,source_after_sha256:after.sourceHash,source_clean:true,build_host_python:'3.12.10',mechanism:value};
+            for (const directory of ['output','output/checks']) {
+              let info=inspect(directory,true);
+              if (info === null) {mkdirSync(directory);info=inspect(directory);}
+              if (!info.isDirectory()) refuse();
+            }
+            const destination='output/checks/r19-legacy-lock-attribute.json';
+            if (inspect(destination,true) !== null) refuse();
+            const serialized=Buffer.from(JSON.stringify(binding,null,2)+'\n','utf8');
+            if (serialized.length > 8192) refuse();
+            writeFileSync(destination,serialized,{flag:'wx'});
+            readPublished(destination,serialized);
+            const final=captureSourceSnapshot();
+            if (final.sourceStatus !== 'available' || final.head !== before.head || final.sourceHash !== before.sourceHash || !clean()) refuse();
+            readPublished(destination,serialized);
+            appendFileSync(process.env.GITHUB_OUTPUT,'metadata_validated=true\n');
+            process.exitCode=passed ? 0 : 2;
+          } catch {
+            process.stderr.write('Fixed native mechanism validation failed; no raw output retained.\n');
+            process.exitCode=2;
+          }
+          NODE
+      - name: Retain only source-bound finite mechanism metadata
+        if: ${{ !cancelled() && steps.attribute.outputs.metadata_validated == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: r19-legacy-lock-attribute-metadata
+          path: output/checks/r19-legacy-lock-attribute.json
+          if-no-files-found: error
           retention-days: 7
   observer-contract:
     needs: validate-selection
