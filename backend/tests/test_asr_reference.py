@@ -29,6 +29,7 @@ def module():
 
 def common_markers(*, runtime='Full', x64='True', empty='False', programdata='True', allusers='True', rooted='True'):
     return (f'R19-ASR-COMMON-V1 folder;runtime={runtime};x64={x64};empty={empty};programdata={programdata};allusers={allusers}\n'
+        'R19-ASR-COMMON-V1 do-not-verify-returned\n'
         'R19-ASR-COMMON-V1 do-not-verify;empty=False;rooted=True;programdata=True;allusers=True\n'
         f'R19-ASR-COMMON-V1 root;empty=False;rooted={rooted}\n').encode()
 
@@ -54,17 +55,19 @@ def test_common_data_fixed_project_uses_only_builtin_property_functions_and_orde
     assert tree.attrib == {'DefaultTargets': 'R19Root'}
     messages = [element.attrib['Text'] for element in tree.iter() if element.tag.endswith('}Message')]
     assert [message.split(';')[0] for message in messages] == [
-        'R19-ASR-COMMON-V1 folder', 'R19-ASR-COMMON-V1 do-not-verify', 'R19-ASR-COMMON-V1 root']
+        'R19-ASR-COMMON-V1 folder', 'R19-ASR-COMMON-V1 do-not-verify-returned',
+        'R19-ASR-COMMON-V1 do-not-verify', 'R19-ASR-COMMON-V1 root']
     assert all(message.startswith('R19-ASR-COMMON-V1 ') for message in messages)
     assert 'GetFolderPath(\'SpecialFolder.CommonApplicationData\')' in module.COMMON_DATA_PROJECT
     assert "GetFolderPath('SpecialFolder.CommonApplicationData', 'SpecialFolderOption.DoNotVerify')" in module.COMMON_DATA_PROJECT
     assert all("'StringComparison.OrdinalIgnoreCase'" in message for message in messages if '::Equals(' in message)
     # Default emission precedes the contrast call, and both precede GetPathRoot.
     assert module.COMMON_DATA_PROJECT.index('R19-ASR-COMMON-V1 folder;') < module.COMMON_DATA_PROJECT.index("'SpecialFolderOption.DoNotVerify'") < module.COMMON_DATA_PROJECT.index('::GetPathRoot(')
-    contrast = messages[1]
+    assert messages[1] == 'R19-ASR-COMMON-V1 do-not-verify-returned' and '$' not in messages[1]
+    contrast = messages[2]
     assert {part.split('=', 1)[0] for part in contrast.split(';')[1:]} == {'empty', 'rooted', 'programdata', 'allusers'}
     assert all('=$([' in part for part in contrast.split(';')[1:])  # No raw property output.
-    assert '$(_R19DoNotVerifyFolder)' not in messages[2]  # Default root authority stays separate.
+    assert '$(_R19DoNotVerifyFolder)' not in messages[3]  # Default root authority stays separate.
     assert '$(MSBuildRuntimeType)' in module.COMMON_DATA_PROJECT and 'Is64BitProcess' in module.COMMON_DATA_PROJECT
     assert 'GetPathRoot' in module.COMMON_DATA_PROJECT and 'IsPathRooted' in module.COMMON_DATA_PROJECT
     assert 'SystemDrive' not in module.COMMON_DATA_PROJECT
@@ -78,6 +81,7 @@ def test_common_data_markers_are_fixed_typed_states_without_private_output(modul
     assert value == {'status': 'observed', 'reason': 'none', 'runtime': 'full', 'x64': True,
         'folder': 'nonempty', 'root': 'nonempty', 'rooted': True,
         'programdata_equal': True, 'allusersprofile_equal': True,
+        'do_not_verify_call': 'returned', 'msbuild_codes': [],
         'do_not_verify': {'empty': False, 'rooted': True, 'programdata_equal': True, 'allusersprofile_equal': True}}
     assert 'private' not in json.dumps(value)
     assert module.common_data_markers(0, b'\xef\xbb\xbf' + common_markers()) == value
@@ -109,7 +113,7 @@ def test_common_data_nonzero_folder_only_is_partial_evidence_not_root_success(mo
 
 
 def test_common_data_contrast_survives_rejected_root_without_promoting_default(module):
-    partial = b'\n'.join(common_markers(empty='True').splitlines()[:2]) + b'\n'
+    partial = b'\n'.join(common_markers(empty='True').splitlines()[:3]) + b'\n'
     value = module.common_data_markers(1, partial)
     assert value['status'] == 'rejected' and value['folder'] == 'empty' and value['root'] == 'not-run'
     assert value['do_not_verify'] == {'empty': False, 'rooted': True,
@@ -117,17 +121,103 @@ def test_common_data_contrast_survives_rejected_root_without_promoting_default(m
     with pytest.raises(module.CommonDataProbeError): module.common_data_markers(0, partial)
 
 
+def test_common_data_constant_return_stage_precedes_private_message_evaluation(module):
+    partial = b'\n'.join(common_markers(empty='True').splitlines()[:2]) + b'\n'
+    value = module.common_data_markers(1, partial)
+    assert value['do_not_verify_call'] == 'returned'
+    assert all(v is None for v in value['do_not_verify'].values())
+    assert value['status'] == 'rejected' and value['root'] == 'not-run'
+    with pytest.raises(module.CommonDataProbeError) as error: module.common_data_markers(0, partial)
+    assert error.value.call_stage == 'returned'
+    default_only = module.common_data_markers(1, common_markers().splitlines(keepends=True)[0])
+    assert default_only['do_not_verify_call'] == 'not-observed'  # No assertion that the call threw.
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'duplicate', 'reordered', 'truncated', 'property'])
+def test_common_data_constant_stage_requires_exact_cardinality_and_order(module, mutation):
+    lines = common_markers().splitlines()
+    if mutation == 'missing': lines.pop(1)
+    if mutation == 'duplicate': lines.insert(2, lines[1])
+    if mutation == 'reordered': lines[0], lines[1] = lines[1], lines[0]
+    if mutation == 'truncated': lines[1] = lines[1][:-1]
+    if mutation == 'property': lines[1] += b';value=private-field'
+    with pytest.raises(module.CommonDataProbeError) as error:
+        module.common_data_markers(1, b'\n'.join(lines) + b'\n')
+    assert error.value.call_stage == 'not-observed'
+
+
+def test_common_data_codes_require_owned_error_headers_and_deduplicate_canonically(module, tmp_path):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    raw = (f'{project}(9,7): error MSB4186: private invocation details\n'
+        'MSBUILD : error MSB4184: private expression\n'
+        f'  {project}(9,7,9,20) : error MSB4185: private function\n'
+        f'{project}(9,7): error MSB4184: repeated summary\n').encode() + common_markers()
+    value = module.common_data_markers(1, raw, project=project)
+    assert value['msbuild_codes'] == ['MSB4184', 'MSB4185', 'MSB4186']
+    assert 'private' not in json.dumps(value) and str(project) not in json.dumps(value)
+    assert value['status'] == 'rejected'
+
+
+@pytest.mark.parametrize('line', [
+    'message mentions MSB4184 only', 'message: error MSB4184: private text',
+    'The expression "MSBUILD : error MSB4184: private" cannot be evaluated.',
+    'MSBUILD : warning MSB4184: private', 'MSBUILD : error MSB9999: private',
+    'MSBUILD : error MSB41840: private', 'MSBUILD : error MSB4184/private-path',
+    'private-MSB4184-folder/PRIVATE-COMMON-DATA.proj(1,2): error MSB4184: private',
+    'foreign/PRIVATE-COMMON-DATA.proj(1,2): error MSB4184: private',
+    'PRIVATE-COMMON-DATA.proj(1,2): error MSB4184: private',
+    '{project}(0,2): error MSB4184: private', '{project}(1,10000000): error MSB4184: private',
+    'prefix {project}(1,2): error MSB4184: private'])
+def test_common_data_code_tokens_in_paths_messages_expressions_or_bad_headers_are_not_observations(module, tmp_path, line):
+    project = tmp_path.resolve()/'PRIVATE-COMMON-DATA.proj'
+    raw = (line.replace('{project}', str(project))+'\n').encode() + common_markers()
+    assert module.common_data_markers(1, raw, project=project)['msbuild_codes'] == []
+
+
+@pytest.mark.parametrize('malformed', [False, True])
+def test_common_data_stage_and_code_survive_partial_failure_without_granting_acceptance(module, tmp_path, monkeypatch, malformed):
+    output, _folder, _executable, roots, initial = common_environment_fixture(module, tmp_path, monkeypatch)
+    raw = b'\n'.join(common_markers(empty='True').splitlines()[:2]) + b'\n'
+    if malformed: raw += b'R19-ASR-COMMON-V1 do-not-verify;empty=private-field\n'
+    raw += f'{output/"PRIVATE-COMMON-DATA.proj"}(9,7): error MSB4184: private expression/context\n'.encode()
+    monkeypatch.setattr(module, 'capture_common_data', lambda *_: (1, raw))
+    with pytest.raises(ValueError, match='Full CLR x64'):
+        module.common_data_environment(output, roots, initial, {})
+    value = module.safe_build_environment_observation()['common_data']['bound']
+    assert value['do_not_verify_call'] == 'returned' and value['msbuild_codes'] == ['MSB4184']
+    assert value['status'] == 'rejected' and all(v is None for v in value['do_not_verify'].values())
+    assert value['reason'] == ('invalid-markers' if malformed else 'process-rejected')
+    assert 'private' not in json.dumps(value)
+
+
+@pytest.mark.parametrize('codes', ['MSB4184', ('MSB4184',), [True], ['private'],
+    ['MSB4186','MSB4184'], ['MSB4184','MSB4184'], ['MSB4184']*4])
+def test_common_data_public_code_projection_requires_exact_sorted_unique_allowlist(module, codes):
+    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+        'baseline': module.common_data_result(), 'bound': module.common_data_result('invalid-markers')}
+    value['bound']['msbuild_codes'] = codes
+    assert module.safe_common_data_observation(value) is None
+
+
+@pytest.mark.parametrize('stage', [True, None, [], 'private', 'threw'])
+def test_common_data_public_stage_projection_has_no_inferred_failure_or_raw_context(module, stage):
+    value = {'origin': 'FOLDERID_ProgramData', 'binding': 'PROGRAMDATA+ALLUSERSPROFILE', 'origin_stable': 'verified',
+        'baseline': module.common_data_result(), 'bound': module.common_data_result('invalid-markers')}
+    value['bound']['do_not_verify_call'] = stage
+    assert module.safe_common_data_observation(value) is None
+
+
 @pytest.mark.parametrize('mutation', ['missing', 'swapped', 'duplicate', 'truncated', 'unknown', 'lowercase', 'integer', 'extra'])
 def test_common_data_contrast_refuses_ambiguous_partial_or_untyped_records(module, mutation):
     lines = common_markers().splitlines()
-    if mutation == 'missing': lines.pop(1)
-    if mutation == 'swapped': lines[1], lines[2] = lines[2], lines[1]
-    if mutation == 'duplicate': lines.insert(2, lines[1])
-    if mutation == 'truncated': lines[1] = lines[1][:-2]
-    if mutation == 'unknown': lines[1] = lines[1].replace(b'do-not-verify', b'private-unknown')
-    if mutation == 'lowercase': lines[1] = lines[1].replace(b'rooted=True', b'rooted=true')
-    if mutation == 'integer': lines[1] = lines[1].replace(b'rooted=True', b'rooted=1')
-    if mutation == 'extra': lines[1] += b';raw=private-folder-value'
+    if mutation == 'missing': lines.pop(2)
+    if mutation == 'swapped': lines[2], lines[3] = lines[3], lines[2]
+    if mutation == 'duplicate': lines.insert(3, lines[2])
+    if mutation == 'truncated': lines[2] = lines[2][:-2]
+    if mutation == 'unknown': lines[2] = lines[2].replace(b'do-not-verify', b'private-unknown')
+    if mutation == 'lowercase': lines[2] = lines[2].replace(b'rooted=True', b'rooted=true')
+    if mutation == 'integer': lines[2] = lines[2].replace(b'rooted=True', b'rooted=1')
+    if mutation == 'extra': lines[2] += b';raw=private-folder-value'
     with pytest.raises(module.CommonDataProbeError) as error:
         module.common_data_markers(1, b'\n'.join(lines) + b'\n')
     assert error.value.reason == 'invalid-markers' and 'private' not in str(error.value)
@@ -137,7 +227,7 @@ def test_common_data_contrast_refuses_ambiguous_partial_or_untyped_records(modul
 def test_common_data_unverified_result_cannot_authorize_empty_default(module, tmp_path, monkeypatch, partial):
     output, _folder, _executable, roots, initial = common_environment_fixture(module, tmp_path, monkeypatch)
     raw = common_markers(empty='True')
-    if partial: raw = b'\n'.join(raw.splitlines()[:2]) + b'\n'
+    if partial: raw = b'\n'.join(raw.splitlines()[:3]) + b'\n'
     calls = []
     def capture(*_):
         calls.append(True)

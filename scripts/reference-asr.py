@@ -76,6 +76,8 @@ COMMON_DATA_BYTES = 32768
 COMMON_DATA_SECONDS = 30
 COMMON_DATA_REASONS = frozenset({'none', 'not-run', 'process-rejected', 'invalid-markers',
     'invalid-utf8', 'output-limit', 'deadline', 'pipe-unavailable'})
+COMMON_DATA_CALL_STAGES = frozenset({'not-run', 'not-observed', 'returned'})
+COMMON_DATA_MSB_CODES = ('MSB4184', 'MSB4185', 'MSB4186')
 COMMON_DATA_PROJECT = r'''<Project DefaultTargets="R19Root" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Target Name="R19Folder">
     <PropertyGroup>
@@ -87,6 +89,7 @@ COMMON_DATA_PROJECT = r'''<Project DefaultTargets="R19Root" xmlns="http://schema
     <PropertyGroup>
       <_R19DoNotVerifyFolder>$([System.Environment]::GetFolderPath('SpecialFolder.CommonApplicationData', 'SpecialFolderOption.DoNotVerify'))</_R19DoNotVerifyFolder>
     </PropertyGroup>
+    <Message Importance="High" Text="R19-ASR-COMMON-V1 do-not-verify-returned" />
     <Message Importance="High" Text="R19-ASR-COMMON-V1 do-not-verify;empty=$([System.String]::IsNullOrWhiteSpace('$(_R19DoNotVerifyFolder)'));rooted=$([System.IO.Path]::IsPathRooted('$(_R19DoNotVerifyFolder)'));programdata=$([System.String]::Equals('$(_R19DoNotVerifyFolder)', '$(_R19ProgramData)', 'StringComparison.OrdinalIgnoreCase'));allusers=$([System.String]::Equals('$(_R19DoNotVerifyFolder)', '$(_R19AllUsers)', 'StringComparison.OrdinalIgnoreCase'))" />
   </Target>
   <Target Name="R19Root" DependsOnTargets="R19Folder">
@@ -1187,8 +1190,10 @@ def cmake_failure_details(content):
 
 
 class CommonDataProbeError(ValueError):
-    def __init__(self, reason):
+    def __init__(self, reason, *, call_stage='not-observed', codes=()):
         self.reason = reason if reason in COMMON_DATA_REASONS else 'invalid-markers'
+        self.call_stage = call_stage if type(call_stage) is str and call_stage in COMMON_DATA_CALL_STAGES else 'not-observed'
+        self.codes = sorted({c for c in codes if type(c) is str and c in COMMON_DATA_MSB_CODES}) if type(codes) in (list, tuple) and len(codes) <= 3 else []
         super().__init__('The fixed common-data preflight was rejected.')
 
 
@@ -1326,10 +1331,11 @@ def common_data_result(reason='not-run'):
     return {'status': 'not-run' if reason == 'not-run' else 'rejected', 'reason': reason,
         'runtime': 'unavailable', 'x64': None, 'folder': 'unavailable', 'root': 'not-run',
         'rooted': None, 'programdata_equal': None, 'allusersprofile_equal': None,
+        'do_not_verify_call': 'not-run' if reason == 'not-run' else 'not-observed', 'msbuild_codes': [],
         'do_not_verify': {'empty': None, 'rooted': None, 'programdata_equal': None, 'allusersprofile_equal': None}}
 
 
-def common_data_markers(code, data):
+def common_data_markers(code, data, *, project=None):
     if type(code) is not int or not 0 <= code <= 0xffffffff or type(data) is not bytes:
         raise CommonDataProbeError('invalid-markers')
     if len(data) > COMMON_DATA_BYTES:
@@ -1344,16 +1350,28 @@ def common_data_markers(code, data):
         raise CommonDataProbeError('invalid-markers')
     # Other MSBuild messages are discarded, never retained in an observation.
     lines = [line.removesuffix('\r').lstrip(' \t') for line in text.split('\n') if 'R19-ASR-COMMON' in line]
+    # Only a fixed MSBUILD origin or this actual authored project can supply a
+    # code. Unknown paths/messages/expressions are never searched for tokens.
+    origins = ['MSBUILD']
+    if (isinstance(project, Path) and project.is_absolute() and project.name == 'PRIVATE-COMMON-DATA.proj'
+            and len(str(project)) <= 32767 and not any(c in str(project) for c in ('\r', '\n', '\x00'))):
+        position = r'\([1-9][0-9]{0,6},[1-9][0-9]{0,6}(?:,[1-9][0-9]{0,6},[1-9][0-9]{0,6})?\)'
+        origins.append(re.escape(str(project)) + position)
+    header = re.compile(r'^[ \t]*(?:' + '|'.join(origins) + r')[ \t]*:[ \t]+error[ \t]+(MSB418[456]):(?:[ \t]|$)')
+    codes = sorted({match[1] for line in text.split('\n') if (match := header.match(line.removesuffix('\r')))})
     folder = re.fullmatch(r'R19-ASR-COMMON-V1 folder;runtime=(Full|Core|Mono);x64=(True|False);empty=(True|False);programdata=(True|False);allusers=(True|False)', lines[0]) if lines else None
-    unverified = re.fullmatch(r'R19-ASR-COMMON-V1 do-not-verify;empty=(True|False);rooted=(True|False);programdata=(True|False);allusers=(True|False)', lines[1]) if len(lines) >= 2 else None
-    root = re.fullmatch(r'R19-ASR-COMMON-V1 root;empty=(True|False);rooted=(True|False)', lines[2]) if len(lines) == 3 else None
-    if (not folder or len(lines) > 3 or (len(lines) >= 2 and not unverified)
-            or (len(lines) == 3 and not root) or (code == 0 and not root)):
-        raise CommonDataProbeError('invalid-markers')
+    returned = 'R19-ASR-COMMON-V1 do-not-verify-returned'
+    stage = 'returned' if folder and len(lines) >= 2 and lines[1] == returned and lines.count(returned) == 1 else 'not-observed'
+    unverified = re.fullmatch(r'R19-ASR-COMMON-V1 do-not-verify;empty=(True|False);rooted=(True|False);programdata=(True|False);allusers=(True|False)', lines[2]) if len(lines) >= 3 else None
+    root = re.fullmatch(r'R19-ASR-COMMON-V1 root;empty=(True|False);rooted=(True|False)', lines[3]) if len(lines) == 4 else None
+    if (not folder or len(lines) > 4 or (len(lines) >= 2 and stage != 'returned')
+            or (len(lines) >= 3 and not unverified) or (len(lines) == 4 and not root) or (code == 0 and not root)):
+        raise CommonDataProbeError('invalid-markers', call_stage=stage, codes=codes)
     value = common_data_result('none' if code == 0 else 'process-rejected')
     value.update(status='observed' if code == 0 else 'rejected', runtime=folder[1].lower(),
         x64=folder[2] == 'True', folder='empty' if folder[3] == 'True' else 'nonempty',
-        programdata_equal=folder[4] == 'True', allusersprofile_equal=folder[5] == 'True')
+        programdata_equal=folder[4] == 'True', allusersprofile_equal=folder[5] == 'True',
+        do_not_verify_call=stage, msbuild_codes=codes)
     if unverified:
         value['do_not_verify'] = dict(zip(('empty', 'rooted', 'programdata_equal', 'allusersprofile_equal'),
                                         (unverified[i] == 'True' for i in range(1, 5))))
@@ -1382,12 +1400,20 @@ def safe_common_data_observation(value):
         if any(item[k] is not None and type(item[k]) is not bool
                 for k in ('x64', 'rooted', 'programdata_equal', 'allusersprofile_equal')):
             return None
+        stage, codes = item['do_not_verify_call'], item['msbuild_codes']
+        if (type(stage) is not str or stage not in COMMON_DATA_CALL_STAGES or type(codes) is not list
+                or len(codes) > 3 or any(type(c) is not str or c not in COMMON_DATA_MSB_CODES for c in codes)
+                or codes != sorted(set(codes))):
+            return None
         unverified = item['do_not_verify']
         if (type(unverified) is not dict or set(unverified) != set(common_data_result()['do_not_verify'])
                 or not (all(v is None for v in unverified.values())
                         or all(type(v) is bool for v in unverified.values()))):
             return None
-        result[state] = {**item, 'do_not_verify': dict(unverified)}
+        if ((all(type(v) is bool for v in unverified.values()) and stage != 'returned')
+                or (item['status'] == 'not-run' and (stage != 'not-run' or codes))):
+            return None
+        result[state] = {**item, 'do_not_verify': dict(unverified), 'msbuild_codes': list(codes)}
     return result
 
 
@@ -1436,9 +1462,10 @@ def common_data_environment(output, roots, initial, env):
         check_common_data_origin()
         verify_executable()
         try:
-            value[name] = common_data_markers(*capture_common_data(command, child_env, output))
+            value[name] = common_data_markers(*capture_common_data(command, child_env, output), project=project)
         except CommonDataProbeError as error:
             value[name] = common_data_result(error.reason)
+            value[name].update(do_not_verify_call=error.call_stage, msbuild_codes=list(error.codes))
         verify_executable()
         check_common_data_origin()
     observed = value['bound']

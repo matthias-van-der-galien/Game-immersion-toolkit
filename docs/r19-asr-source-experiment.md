@@ -120,14 +120,14 @@ MSBuild. A local pipe reader checks available bytes before reading: at most
 32 KiB of accepted merged output (one overflow lookahead byte) and 30 seconds
 per invocation, followed by bounded owned
 cleanup. It uses no unbounded read, reader thread or raw preflight log. Exactly
-three fixed ASCII marker formats supply ordered default/DoNotVerify/root observations;
+four fixed ASCII marker formats supply ordered default/constant-return-stage/DoNotVerify/root observations;
 malformed, duplicate, missing, non-UTF8, oversized or timed-out output supplies
 only a fixed refusal category. Other command text is discarded. The public
 projection rechecks every key, enum and boolean and carries no exception,
 command, folder value or private marker field. The four `do_not_verify` fields
 are all typed booleans when that complete record is delivered, or all null when
-it is unavailable. A nonzero exit may retain a complete default-only or
-default-plus-contrast observation before the root step; malformed partial lines
+it is unavailable. A nonzero exit may retain a complete default-only,
+default-plus-return-stage or default-plus-stage-and-contrast observation before the root step; malformed partial lines
 are refused, and mixed null/boolean contrast fields cannot pass projection.
 
 An ordinary baseline rejection still permits the one bound state. Unconfirmed
@@ -191,6 +191,34 @@ later marker expression failed. The actual image was `20261030.294.1`, VS
 `18.11.12328.437`. Configuration, native probes and final tool/source seals
 remain unavailable; every acceptance gate stays closed. Exact provider identities
 are in the [checkpoint ledger](r19-frozen-checkpoint-20261031.json).
+
+The next source diagnostic inserts one constant Message immediately after the
+DoNotVerify call and before its four-expression Message. That constant contains
+no property expansion. `do_not_verify_call` is strictly `not-run`,
+`not-observed` or `returned`; an absent constant never asserts that the call
+threw. The returned observation requires the exact unique constant directly
+after a valid default marker. A malformed later contrast stays rejected even
+when that earlier constant was observed. Full successful marker parsing still
+requires every record in order, and default-folder acceptance remains unchanged.
+
+Only three [MSBuild resource codes](https://github.com/dotnet/msbuild/blob/86743d0545fba3d043d4e7aaa12891edb3fd56e6/src/Build/Resources/Strings.resx#L618-L663)
+can enter `msbuild_codes`: MSB4184 for expression evaluation, MSB4185 for an
+unavailable property function and MSB4186 for static invocation. Extraction
+uses the existing capped in-memory output, without a log or new reader. The
+[diagnostic header](https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-diagnostic-format-for-tasks)
+must begin with the fixed MSBUILD origin or the exact actual authored project
+path plus positive bounded line/column fields, followed by the error category
+and an exact allowlisted code. Basename/foreign-path matches, arbitrary message
+or expression mentions, warnings, unknown codes and malformed positions do not
+supply a code. The project path and positions remain private.
+
+The list is deduplicated, sorted and capped at the three known codes. Public
+projection independently rejects unknown values, non-list/incorrect types,
+duplicates and noncanonical order; stage and code observations survive only as
+finite diagnostic fields on a rejected partial/invalid-marker result. They
+cannot authorize configuration. An empty list means no allowlisted code was
+observed, not that no error occurred. The new stage/code diagnostic has not
+yet been exercised by an exact Windows source attempt.
 
 ### Manual source build
 
