@@ -37,7 +37,7 @@ from .toolkit_update import ToolkitUpdater
 from .lexirise import LexiriseService, LexiriseError, REQUEST_KEY
 from .reading import LexiriseReadingService
 from .runtime_handoff import CaptureHandoff
-from .runtime_writers import RuntimeWriterGate, RuntimeWriterMiddleware
+from .runtime_writers import RuntimeWriterGate, RuntimeWriterMiddleware, WritersQuiescing
 from .state_version import StateVersion
 from .lexirise_settings import account_settings, STUDY_LANGUAGES
 from .accounts import AccountStore
@@ -1759,19 +1759,43 @@ def windows() -> list[dict[str, object]]:
 
 @app.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    await runtime.hub.connect(websocket)
+    current = runtime
+    hub, gate, status = current.hub, current.request_writers, current.status
     try:
-        snapshot = await asyncio.to_thread(runtime.status)
-        event = {"type": "snapshot", "snapshot": snapshot}
-        if 'context' in snapshot:
-            event['context'] = snapshot['context']
-        await websocket.send_json(event)
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await runtime.hub.disconnect(websocket)
-    except Exception:
-        await runtime.hub.disconnect(websocket)
+        try:
+            ticket = gate.capture_ticket()
+        except WritersQuiescing:
+            # Accept first: an ASGI close before acceptance is HTTP denial,
+            # rather than the retryable WebSocket close code promised here.
+            await websocket.accept()
+            await websocket.close(code=1013)
+            return
+
+        def snapshot_status():
+            gate.enter(ticket)
+            try:
+                return status()
+            finally:
+                # A cancelled async waiter cannot end the actual worker scope.
+                gate.leave()
+
+        await hub.connect(websocket)
+        try:
+            snapshot = await asyncio.to_thread(snapshot_status)
+            event = {"type": "snapshot", "snapshot": snapshot}
+            if 'context' in snapshot:
+                event['context'] = snapshot['context']
+            await websocket.send_json(event)
+            while True:
+                await websocket.receive_text()
+        except WritersQuiescing:
+            await websocket.close(code=1013)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+    finally:
+        await hub.disconnect(websocket)
 
 
 class ToolkitUpdatePreferences(BaseModel):

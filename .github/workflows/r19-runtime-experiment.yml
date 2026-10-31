@@ -389,7 +389,7 @@ jobs:
             'windows_preparation_drain', 'preparation_process_tree', 'suspended_preparation_process', 'python_supplier_notices',
             'r19_acceptance', 'game_paths', 'unvoiced_export_probe', 'runtime_writers',
             'runtime_handoff', 'preparation_cancellation', 'mobile_export_api',
-            'scoped_mobile_exports', 'automatic_mobile_exports', 'installation', 'local_access',
+            'scoped_mobile_exports', 'automatic_mobile_exports', 'installation', 'local_access', 'hito_api',
             'runtime_codec_output', 'native_input_ownership', 'source_pcm_probe', 'source_formats',
             'portal_assets', 'portal2_assets', 'halflife2_assets', 'window_capture', 'runtime_host',
             'diagnostic_notice_delivery', 'flatbuffers_notices', 'guarded_slot_probe',

@@ -19,6 +19,25 @@ folder-picker results. Health, readiness and the authenticated local handoff
 controls remain available. Existing local-access and account isolation checks
 still apply; an idle read-only WebSocket is not a writer barrier.
 
+The initial WebSocket status snapshot is a known store-accessing producer. Its
+endpoint captures one Runtime, hub, bound status function and writer gate before
+the first await. It also captures an opaque process-local admission ticket while
+that gate is accepting. The actual status worker enters the gate with that
+ticket inside its thread and leaves only after the full status operation ends.
+Cancelling/disconnecting the async waiter cannot decrement that active scope
+early. Cleanup disconnects the same captured hub, including cancellation and
+partially completed connection setup.
+
+Stopping admission retires all earlier tickets. A queued pre-stop snapshot
+refuses status/SQL even if its thread starts after a later resume. Tickets bind
+the exact gate and opaque epoch, are not serialized or stored in a successful
+ticket registry, and do not increase the active count merely by being captured.
+They are epoch bindings, not one-use operation IDs. Ordinary unticketed HTTP/
+source admission retains its existing behavior. A valid local WebSocket refused
+by this gate completes acceptance before closing with retryable code 1013;
+untrusted Host/Origin still receives middleware code 1008 before acceptance or
+status access.
+
 The shared lifecycle lock serializes quiesce and activation. A strict
 quiesce attempt has the existing 30-second budget. A timed-out or disconnected
 waiter retains the real cleanup task. Activation refuses while that task or a
@@ -33,6 +52,7 @@ The lifecycle covers these existing producers:
 | Producer | Drain or explicit refusal |
 | --- | --- |
 | Admitted HTTP work | Wait through ASGI completion; new ordinary requests receive 503 while closed |
+| Initial WebSocket status | Count the actual status thread; retire its queued ticket on admission stop, including across resume |
 | Manual mobile exports and pickers | Close admission; refuse live monitor/process, picker or asynchronous cancellation work |
 | Automatic export destination picker | Refuse an active picker before stopping the existing automatic-export service |
 | Native setup/tool preparation | Close admission; join the actual tool thread and native-completion callbacks, including refresh work after process exit |
@@ -59,6 +79,10 @@ A return from quiesce is capture handoff state, not independent authorization to
 copy settings, databases or credentials. The synthetic migration coordinator
 still requires its own synthetic proof and does not accept this response as a
 production barrier. No live migration or account write is exercised here.
+The WebSocket fix covers this one initial status producer, not every future
+message/queued callback, active socket or mutable resource. Its ticket does not
+prove physical connection/cursor/file closure, a complete RuntimeDataFence,
+whole-process signaling, a safe copied-store cutover or preserved OCR warmth.
 
 Existing export/update cancellation and several game/legacy native processes
 still lack complete supervising host ownership. Checking their tracked process
@@ -81,6 +105,13 @@ supply, notices and maintenance approval remain separate prerequisites.
 whose callback still writes after `done()`, response streaming, retired OCR
 workers, post-process native refresh, cancelled export labels, queued capture
 publications, activation serialization and disconnected handoff waiters.
+It also checks wrong-gate/type and retired admission tickets without changing
+ordinary unticketed admission. `test_hito_api.py` uses real SQLite and controlled
+thread Events for snapshot cancellation/error balance, queued execution after
+stop-plus-resume, and binding/cleanup of the original Runtime and hub.
+`test_local_access.py` exercises the actual ASGI acceptance/1013 ordering and
+preserved pre-dispatch Host/Origin refusal. Account side effects are mocked;
+these source tests introduce no new native runtime receipt.
 `test_runtime_handoff.py` exercises the existing endpoint ordering and explicit
 Hito refusal, default source compatibility and rejection of a default-protocol
 bypass. `test_preparation_cancellation.py` retains capture/session identity

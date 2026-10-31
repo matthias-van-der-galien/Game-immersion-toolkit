@@ -8,6 +8,29 @@ import pytest
 from backend.runtime_writers import QuiesceableExecutor, RuntimeWriterGate, RuntimeWriterMiddleware, WritersQuiescing
 
 
+def test_admission_tickets_bind_gate_and_epoch_and_retire_across_resume():
+    gate, other = RuntimeWriterGate(), RuntimeWriterGate()
+    ticket = gate.capture_ticket()
+    for rejected in (None, True, {}, other.capture_ticket()):
+        with pytest.raises(WritersQuiescing): gate.enter(rejected)
+    gate.wait_drained(0)
+    gate.enter(ticket)
+    gate.stop_admission()
+    with pytest.raises(WritersQuiescing): gate.capture_ticket()
+    with pytest.raises(WritersQuiescing): gate.enter(ticket)
+    with pytest.raises(TimeoutError): gate.wait_drained(0)
+    gate.leave()
+    gate.wait_drained(0)
+    gate.resume()
+    with pytest.raises(WritersQuiescing): gate.enter(ticket)
+    replacement = gate.capture_ticket()
+    gate.enter(replacement); gate.leave()
+    gate.enter(); gate.leave()  # Legacy unticketed admission remains usable.
+    gate.stop_admission(); gate.stop_admission(); gate.resume()
+    with pytest.raises(WritersQuiescing): gate.enter(replacement)
+    gate.wait_drained(0)
+
+
 def test_done_future_callback_must_finish_before_resume_or_drain_proof():
     work_release, callback_entered, callback_release = threading.Event(), threading.Event(), threading.Event()
     pool = QuiesceableExecutor(1)

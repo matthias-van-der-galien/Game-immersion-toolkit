@@ -9,9 +9,20 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
+from dataclasses import dataclass
 
 class WritersQuiescing(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class RuntimeAdmissionTicket:
+    """Opaque process-local gate/epoch binding, never copy or root authority."""
+    _gate: RuntimeWriterGate
+    _epoch: object
+
+
+_UNTICKETED = object()
 
 
 class QuiesceableExecutor(Executor):
@@ -74,11 +85,21 @@ class RuntimeWriterGate:
         self._condition = threading.Condition()
         self._accepting = True
         self._active = 0
+        self._epoch = object()
 
-    def enter(self):
+    def capture_ticket(self):
         with self._condition:
             if not self._accepting:
                 raise WritersQuiescing('Runtime handoff is stopping writers. Retry after activation or recovery.')
+            return RuntimeAdmissionTicket(self, self._epoch)
+
+    def enter(self, ticket=_UNTICKETED):
+        with self._condition:
+            if not self._accepting:
+                raise WritersQuiescing('Runtime handoff is stopping writers. Retry after activation or recovery.')
+            if ticket is not _UNTICKETED and (type(ticket) is not RuntimeAdmissionTicket
+                    or ticket._gate is not self or ticket._epoch is not self._epoch):
+                raise WritersQuiescing('This runtime operation belongs to a retired admission epoch.')
             self._active += 1
 
     def leave(self):
@@ -91,6 +112,7 @@ class RuntimeWriterGate:
     def stop_admission(self):
         with self._condition:
             self._accepting = False
+            self._epoch = object()  # Retire queued pre-stop work even after resume.
 
     def wait_drained(self, timeout):
         deadline = time.monotonic() + max(0, timeout)

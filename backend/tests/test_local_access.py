@@ -8,6 +8,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from backend import api
 from backend.models import AppSettings, CaptureSnapshot
+from backend.runtime_writers import RuntimeWriterGate
 
 
 ORIGINS = [f'http://{host}:{port}' for host in ('localhost', '127.0.0.1') for port in (3000, 3001)]
@@ -37,6 +38,7 @@ def local_client(monkeypatch):
                                 snapshot=lambda: record('snapshot', CaptureSnapshot())),
         settings=SimpleNamespace(save=lambda value: record('save', value)),
         hub=api.EventHub(), status=lambda: record('status', {'synthetic': True}),
+        request_writers=RuntimeWriterGate(),
         transcript=SimpleNamespace(list=lambda **_: record('lines', []), list_favorites=lambda **_: []),
         speakers=SimpleNamespace(enrich=lambda line: line))
     monkeypatch.setattr(api, 'runtime', runtime, raising=False)
@@ -66,6 +68,41 @@ def test_rejected_websocket_never_accepts_or_reads_snapshot(local_client, origin
     assert closed.value.code == 1008
     assert calls == []
     assert api.runtime.hub.clients == set()
+
+
+def test_closed_writer_admission_accepts_then_closes_websocket_with_1013(local_client):
+    client, calls = local_client
+    gate = api.runtime.request_writers
+    gate.stop_admission()
+    headers = {'Host': '127.0.0.1:8766', 'Origin': ORIGINS[0]}
+    with client.websocket_connect('/api/ws', headers=headers) as socket:
+        with pytest.raises(WebSocketDisconnect) as closed: socket.receive_json()
+    assert closed.value.code == 1013 and calls == [] and api.runtime.hub.clients == set()
+    gate.wait_drained(0)
+    assert client.get('/api/health').json() == {'status': 'ok'}
+    assert client.get('/api/status').status_code == 503
+    gate.resume()
+    with client.websocket_connect('/api/ws', headers=headers) as socket:
+        assert socket.receive_json() == {'type': 'snapshot', 'snapshot': {'synthetic': True}}
+    assert calls == ['status']
+
+
+def test_closed_writer_admission_does_not_change_raw_asgi_local_access_rejection(local_client):
+    _, calls = local_client
+    api.runtime.request_writers.stop_admission()
+    async def run(headers):
+        messages = []
+        async def receive(): return {'type': 'websocket.connect'}
+        async def send(message): messages.append(message)
+        await api.app({'type': 'websocket', 'scheme': 'ws', 'server': ('127.0.0.1', 8766),
+                       'path': '/api/ws', 'query_string': b'', 'headers': headers}, receive, send)
+        return messages
+    allowed = asyncio.run(run([(b'host', b'127.0.0.1:8766'), (b'origin', ORIGINS[0].encode())]))
+    assert [message['type'] for message in allowed] == ['websocket.accept', 'websocket.close']
+    assert allowed[-1]['code'] == 1013
+    rejected = asyncio.run(run([(b'host', b'127.0.0.1:8766'), (b'origin', b'https://example.test')]))
+    assert rejected == [{'type': 'websocket.close', 'code': 1008}]
+    assert calls == [] and api.runtime.hub.clients == set()
 
 
 @pytest.mark.parametrize('method,path,body', [
