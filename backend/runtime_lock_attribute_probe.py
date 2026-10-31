@@ -20,7 +20,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = 'proxy-r19-legacy-lock-attribute-mechanism-v1'
+SCHEMA = 'proxy-r19-legacy-lock-attribute-mechanism-v2'
 CONTENT = b'owned R19 legacy lock attribute fixture\n'
 MARKER = '.r19-lock-attribute-fixture.json'
 SOURCE = ROOT / 'scripts/companion-runtime.ps1'
@@ -41,6 +41,15 @@ OBSERVATIONS = ('writable-open', 'exclusive-held', 'arm', 'live-clear', 'rearm',
     'genuine-owner-signaled-and-closed', 'post-loss-readonly-refused', 'restored-open')
 TIME_STATES = ('arm', 'live-clear', 'rearm', 'post-loss', 'test-restore', 'restored')
 _UNCONFIRMED = []  # Private ownership records only; never an adoption/retry list.
+PARENT_STEPS = ('not-started', 'create-pipe', 'create-owned-process', 'resume-owned-process',
+    'bind-client', 'send-grant', 'receive-script-progress', 'receive-result', 'cleanup')
+SCRIPT_STEPS = ('not-started', 'connected', 'grantvalidated', 'sourceopened', 'hashbound',
+    'definitionbound', 'operationentered', 'operationresult')
+CHILD_STATES = ('not-created', 'signaled', 'not-signaled', 'unavailable')
+
+
+def checkpoint():
+    return {'parent_step': 'not-started', 'script_step': 'not-started', 'child_state': 'not-created'}
 
 
 class Refused(Exception):
@@ -238,7 +247,7 @@ def decode(data):
 
 class Pipe:
     def __init__(self, api, name=None):
-        self.api, self.buffer, self.handle = api, bytearray(), None
+        self.api, self.buffer, self.handle, self.received = api, bytearray(), None, 0
         self.name = name or ('r19-lock-attribute-' + uuid.uuid4().hex)
         if not re.fullmatch(r'r19-lock-attribute-[a-f0-9]{32}', self.name):
             raise Refused('protocol-refused')
@@ -305,15 +314,31 @@ class Pipe:
             if not self.api.k.PeekNamedPipe(self.handle.value, None, 0, None, c.byref(count), None):
                 raise Refused('protocol-refused')
             if count.value:
-                remaining = LIMIT + 1 - len(self.buffer)
+                remaining = LIMIT + 1 - self.received
                 data = c.create_string_buffer(min(count.value, remaining))
                 read = c.c_uint32()
                 self.api.check(self.api.k.ReadFile(self.handle.value, data, len(data), c.byref(read), None))
+                self.received += read.value
                 self.buffer.extend(data.raw[:read.value])
-                if len(self.buffer) > LIMIT:
+                if self.received > LIMIT:
                     raise Refused('protocol-refused')
             else:
                 time.sleep(.01)
+        raise Refused('protocol-refused')
+
+    def finish(self, deadline):
+        """The terminal frame is not permission to ignore trailing pipe bytes."""
+        if self.buffer:
+            raise Refused('protocol-refused')
+        while time.monotonic() < deadline:
+            count = c.c_uint32()
+            if not self.api.k.PeekNamedPipe(self.handle.value, None, 0, None, c.byref(count), None):
+                if c.get_last_error() == 109:  # ERROR_BROKEN_PIPE after terminal frame only.
+                    return
+                raise Refused('protocol-refused')
+            if count.value:
+                raise Refused('protocol-refused')
+            time.sleep(.01)
         raise Refused('protocol-refused')
 
     def close(self):
@@ -420,9 +445,18 @@ try {
     $reader=[IO.StreamReader]::new($pipe,[Text.Encoding]::ASCII,$false,4096,$true)
     $writer=[IO.StreamWriter]::new($pipe,[Text.Encoding]::ASCII,4096,$true)
     $writer.AutoFlush=$true
+    function Write-C7Checkpoint([string]$Stage) {
+        $writer.WriteLine('{"kind":"checkpoint","stage":"'+$Stage+'"}')
+    }
+    Write-C7Checkpoint 'connected'
     $grant=$reader.ReadLine()|ConvertFrom-Json
+    $names=@($grant.PSObject.Properties.Name)
+    if ($names.Count -ne 3 -or $names -cnotcontains 'root' -or $names -cnotcontains 'sha256' -or $names -cnotcontains 'source' -or
+        $grant.root -isnot [string] -or $grant.source -isnot [string] -or $grant.sha256 -isnot [string]) { throw 'Grant differs.' }
+    Write-C7Checkpoint 'grantvalidated'
     $source=[IO.File]::Open([string]$grant.source,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
+        Write-C7Checkpoint 'sourceopened'
         if ($source.Length -gt 131072) { throw 'Source exceeds bound.' }
         $raw=[byte[]]::new([int]$source.Length)
         $offset=0
@@ -434,12 +468,15 @@ try {
     } finally { $source.Dispose() }
     $hash=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($raw))).Replace('-','').ToLowerInvariant()
     if ($hash -cne [string]$grant.sha256) { throw 'Source differs.' }
+    Write-C7Checkpoint 'hashbound'
     $tokens=$null; $errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseInput([Text.UTF8Encoding]::new($false,$true).GetString($raw),[ref]$tokens,[ref]$errors)
     $defs=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Enter-CompanionOperation'},$true))
     if ($errors -or $defs.Count -ne 1) { throw 'Source definition differs.' }
     . ([scriptblock]::Create($defs[0].Extent.Text))
+    Write-C7Checkpoint 'definitionbound'
     $state='unclassified-refusal'; $file=$null
+    Write-C7Checkpoint 'operationentered'
     try { $file=Enter-CompanionOperation ([string]$grant.root) -TimeoutSeconds 0 }
     catch {
         $base=$_.Exception.GetBaseException()
@@ -458,23 +495,75 @@ try {
 
 
 class Attempt:
-    def __init__(self, api, command, cwd):
+    def __init__(self, api, command, cwd, *, checkpoint_value=None):
         self.api, self.pipe, self.owner, self.child = api, None, None, None
         self.closed = self.poisoned = False
+        self.checkpoint, self.checkpoint_locked = checkpoint_value, False
         try:
+            self.step('create-pipe')
             self.pipe = Pipe(api)
+            self.step('create-owned-process')
             self.owner = process_module().WindowsPreparationProcess()
             env = {k: v for k, v in os.environ.items() if k.casefold() in {'systemroot', 'windir', 'temp', 'tmp'}}
             self.child = self.owner.create_suspended(command(self.pipe.name), cwd=cwd, env=env)
+            self.step('resume-owned-process')
             self.child.resume_once()
+            self.step('bind-client')
             self.pipe.bind(self.child, time.monotonic() + 10)
         except BaseException:
+            self.checkpoint_locked = True
             self.close()
             raise
 
+    def step(self, name):
+        if self.checkpoint is not None and not self.checkpoint_locked:
+            self.checkpoint['parent_step'] = name
+
+    def observe_child(self):
+        if self.checkpoint is None:
+            return
+        state = 'not-created'
+        try:
+            if self.child is None:
+                if self.owner is not None and any(item.created for item in self.owner.created_children):
+                    state = 'unavailable'
+            elif self.child.closed or not self.child.created:
+                state = 'unavailable'
+            else:
+                observed = self.owner.kernel.WaitForSingleObject(self.child.process_handle, 0)
+                state = 'signaled' if observed == 0 else 'not-signaled' if observed == 258 else 'unavailable'
+        except BaseException:
+            state = 'unavailable'
+        self.checkpoint['child_state'] = state
+
     def exchange(self, value):
-        self.pipe.send(value, time.monotonic() + 5)
-        return self.pipe.receive(time.monotonic() + 10)
+        deadline = time.monotonic() + 10
+        self.pipe.send(value, deadline)
+        return self.pipe.receive(deadline)
+
+    def script_exchange(self, value):
+        deadline = time.monotonic() + 10  # Shared by grant, all progress and terminal/EOF.
+        try:
+            self.step('send-grant')
+            self.pipe.send(value, deadline)
+            for name in SCRIPT_STEPS[1:-1]:
+                self.step('receive-script-progress')
+                if self.pipe.receive(deadline) != {'kind': 'checkpoint', 'stage': name}:
+                    raise Refused('protocol-refused')
+                if self.checkpoint is not None:
+                    self.checkpoint['script_step'] = name
+            self.step('receive-result')
+            result = self.pipe.receive(deadline)
+            if (set(result) != {'state'} or type(result['state']) is not str or result['state'] not in
+                    {'open', 'sharing-refused', 'readonly-refused', 'unclassified-refusal', 'file-close-unconfirmed'}):
+                raise Refused('protocol-refused')
+            if self.checkpoint is not None:
+                self.checkpoint['script_step'] = 'operationresult'
+            self.pipe.finish(deadline)
+            return result
+        except BaseException:
+            self.checkpoint_locked = True
+            raise
 
     def close(self):
         if self.poisoned:
@@ -482,6 +571,8 @@ class Attempt:
         if self.closed:
             return
         self.poisoned = True
+        self.step('cleanup')
+        self.observe_child()  # Only while genuine creation handles are still retained.
         uncertain = False
         for operation in (
             lambda: self.child.stop_and_wait(time.monotonic() + 5) if self.child is not None else None,
@@ -499,17 +590,20 @@ class Attempt:
         self.closed, self.poisoned = True, False
 
 
-def legacy(api, root, expected_source, expected):
+def legacy(api, root, expected_source, expected, *, checkpoint_value=None):
     source_bytes(SOURCE, SOURCE_HASHES)
     executable = api.powershell()
     def command(name):
         script = LEGACY_SCRIPT.replace('__PIPE__', name)
         return [executable, '-NoProfile', '-NonInteractive', '-EncodedCommand', base64.b64encode(script.encode('utf-16le')).decode('ascii')]
-    attempt = Attempt(api, command, root)
+    attempt = Attempt(api, command, root, checkpoint_value=checkpoint_value)
     try:
-        observed = attempt.exchange({'root': str(root), 'source': str(SOURCE), 'sha256': expected_source})
+        observed = attempt.script_exchange({'root': str(root), 'source': str(SOURCE), 'sha256': expected_source})
         if observed != {'state': expected}:
             raise Refused('legacy-outcome-differed')
+    except BaseException:
+        attempt.checkpoint_locked = True
+        raise
     finally:
         attempt.close()
     source_bytes(SOURCE, SOURCE_HASHES)
@@ -519,6 +613,7 @@ def receipt():
     return {'schema': SCHEMA, 'scope': 'authored-local-ntfs-no-writers-mechanism',
         'status': 'failed', 'phase': 'fixture', 'failure': 'unexpected-failure',
         'legacy_source_sha256': None,
+        'baseline_checkpoint': checkpoint(),
         'candidate_data_writers': 0, 'observed': [], 'timestamp_equalities': {},
         'cleanup': 'unconfirmed-fixture-retained', 'production_allowed': False,
         'keeper_loss_acceptance': False, 'rights_approval': False,
@@ -529,7 +624,8 @@ def public_receipt(value):
     template = receipt()
     if type(value) is not dict or set(value) != set(template):
         raise Refused('protocol-refused')
-    flexible = {'status', 'phase', 'failure', 'observed', 'timestamp_equalities', 'cleanup', 'legacy_source_sha256'}
+    flexible = {'status', 'phase', 'failure', 'observed', 'timestamp_equalities', 'cleanup',
+        'legacy_source_sha256', 'baseline_checkpoint'}
     for key in set(template) - flexible:
         if type(value[key]) is not type(template[key]) or value[key] != template[key]:
             raise Refused('protocol-refused')
@@ -549,6 +645,11 @@ def public_receipt(value):
         if (type(item) is not dict or set(item) != {'creation_equal', 'access_equal', 'write_equal', 'change_equal'}
                 or any(type(v) is not bool for v in item.values())):
             raise Refused('protocol-refused')
+    progress = value['baseline_checkpoint']
+    if (type(progress) is not dict or set(progress) != {'parent_step', 'script_step', 'child_state'}
+            or any(type(progress[key]) is not str or progress[key] not in allowed for key, allowed in
+                (('parent_step', PARENT_STEPS), ('script_step', SCRIPT_STEPS), ('child_state', CHILD_STATES)))):
+        raise Refused('protocol-refused')
     if value['status'] == 'mechanism-observed' and (value['phase'] != 'complete' or value['failure'] != 'none'
             or tuple(value['observed']) != OBSERVATIONS or set(value['timestamp_equalities']) != set(TIME_STATES)
             or value['cleanup'] != 'owned-handles-closed-fixture-retained' or value['legacy_source_sha256'] is None
@@ -575,7 +676,8 @@ def experiment():
         path.write_bytes(CONTENT)
         fixture(root, nonce); api.ntfs(root)
         result['phase'] = 'legacy-baseline'
-        legacy(api, root, digest, 'open'); result['observed'].append('writable-open')
+        legacy(api, root, digest, 'open', checkpoint_value=result['baseline_checkpoint'])
+        result['observed'].append('writable-open')
         result['phase'] = 'lease-start'
         attempt = Attempt(api, lambda name: [api.image(), '-I', '-B', str(Path(__file__).resolve()), '--owned-lease', name], root)
         observed = attempt.exchange({'root': str(root), 'nonce': nonce})

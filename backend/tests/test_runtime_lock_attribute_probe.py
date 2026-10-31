@@ -129,6 +129,7 @@ def test_owned_cleanup_attempts_all_independent_steps_and_keeps_uncertainty(fail
         if label == failed: raise OSError('private cleanup sentinel')
     attempt = module.Attempt.__new__(module.Attempt)
     attempt.closed = attempt.poisoned = False
+    attempt.checkpoint, attempt.checkpoint_locked = None, False
     attempt.child = SimpleNamespace(stop_and_wait=lambda _: call('child'))
     attempt.owner = SimpleNamespace(terminate=lambda **_: call('terminate'), close=lambda: call('owner-close'))
     attempt.pipe = SimpleNamespace(close=lambda: call('pipe'))
@@ -162,7 +163,7 @@ def test_nonblocking_pipe_receives_only_bounded_private_frames(payload):
         ctypes.memmove(output, chunk, len(chunk)); received._obj.value = len(chunk); return 1
     pipe = module.Pipe.__new__(module.Pipe)
     pipe.api = SimpleNamespace(check=lambda value: value, k=SimpleNamespace(PeekNamedPipe=peek, ReadFile=read))
-    pipe.handle, pipe.buffer = module.Handle(pipe.api, 8), bytearray()
+    pipe.handle, pipe.buffer, pipe.received = module.Handle(pipe.api, 8), bytearray(), 0
     assert pipe.receive(float('inf')) == {'state': 'held'}
     assert calls and max(calls) <= module.LIMIT + 1
 
@@ -174,7 +175,7 @@ def test_pipe_overflow_is_rejected_before_json_decoding():
         ctypes.memmove(output, b'x' * size, size); received._obj.value = size; return 1
     pipe = module.Pipe.__new__(module.Pipe)
     pipe.api = SimpleNamespace(check=lambda value: value, k=SimpleNamespace(PeekNamedPipe=peek, ReadFile=read))
-    pipe.handle, pipe.buffer = module.Handle(pipe.api, 8), bytearray()
+    pipe.handle, pipe.buffer, pipe.received = module.Handle(pipe.api, 8), bytearray(), 0
     with pytest.raises(module.Refused): pipe.receive(float('inf'))
 
 
@@ -245,7 +246,7 @@ def authored(monkeypatch, tmp_path):
         def close(self):
             if not self.closed:
                 api.lease, self.closed = False, True; api.events.append('owned-lease-stop')
-    def legacy(_api, root, source, expected):
+    def legacy(_api, root, source, expected, *, checkpoint_value=None):
         api.events.append(expected)
         if expected == 'open': assert not api.lease and not api.read_handles and not api.armed
         elif expected == 'readonly-refused': assert not api.lease and not api.read_handles and api.armed
@@ -271,9 +272,9 @@ def test_authored_state_sequence_never_releases_old_open_during_normal_clear_or_
 
 def test_post_loss_refusal_mismatch_retains_readonly_and_never_clears_for_convenience(authored, monkeypatch, tmp_path):
     previous = module.legacy
-    def refuse(api, root, source, expected):
+    def refuse(api, root, source, expected, *, checkpoint_value=None):
         if expected == 'readonly-refused': raise module.Refused('legacy-outcome-differed')
-        return previous(api, root, source, expected)
+        return previous(api, root, source, expected, checkpoint_value=checkpoint_value)
     monkeypatch.setattr(module, 'legacy', refuse)
     result = module.experiment()
     assert result['status'] == 'failed' and result['failure'] == 'legacy-outcome-differed'
@@ -310,3 +311,195 @@ def test_fixture_marker_is_bounded_and_ancestor_link_refused_before_marker_read(
     outside = tmp_path / 'outside'; outside.mkdir()
     marker.unlink(); marker.symlink_to(outside / 'never-read')
     with pytest.raises(module.Refused): module.fixture(root, 'a' * 32)
+
+
+def progress_attempt(frames=None):
+    class Wire:
+        def __init__(self):
+            self.frames = list(frames if frames is not None else [
+                *({'kind': 'checkpoint', 'stage': name} for name in module.SCRIPT_STEPS[1:-1]),
+                {'state': 'open'}])
+            self.deadlines = []
+        def send(self, value, deadline): self.deadlines.append(deadline)
+        def receive(self, deadline):
+            self.deadlines.append(deadline)
+            if not self.frames: raise module.Refused('protocol-refused')
+            value = self.frames.pop(0)
+            if isinstance(value, BaseException): raise value
+            return value
+        def finish(self, deadline):
+            self.deadlines.append(deadline)
+            if self.frames: raise module.Refused('protocol-refused')
+    attempt = module.Attempt.__new__(module.Attempt)
+    attempt.pipe, attempt.checkpoint, attempt.checkpoint_locked = Wire(), module.checkpoint(), False
+    return attempt
+
+
+def test_complete_progress_keeps_terminal_result_and_one_exchange_deadline(monkeypatch):
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 100.)
+    attempt = progress_attempt()
+    assert attempt.script_exchange({'owned': 'grant'}) == {'state': 'open'}
+    assert attempt.checkpoint == {'parent_step': 'receive-result', 'script_step': 'operationresult', 'child_state': 'not-created'}
+    assert set(attempt.pipe.deadlines) == {110.}
+
+
+@pytest.mark.parametrize('mutation', ['duplicate', 'skip', 'unknown', 'private-key', 'wrong-order', 'early-result', 'truncated', 'unknown-result'])
+def test_progress_rejects_bad_order_and_keeps_only_the_last_complete_checkpoint(mutation):
+    attempt = progress_attempt()
+    frames = attempt.pipe.frames
+    if mutation == 'duplicate': frames[2] = dict(frames[1])
+    if mutation == 'skip': frames.pop(2)
+    if mutation == 'unknown': frames[2] = {'kind': 'checkpoint', 'stage': 'private-unknown-stage'}
+    if mutation == 'private-key': frames[2]['raw'] = 'private-path'
+    if mutation == 'wrong-order': frames[2], frames[3] = frames[3], frames[2]
+    if mutation == 'early-result': frames[2] = {'state': 'open'}
+    if mutation == 'truncated': frames[2] = module.Refused('protocol-refused')
+    if mutation == 'unknown-result': frames[-1] = {'state': 'private-unknown-result'}
+    with pytest.raises(module.Refused): attempt.script_exchange({})
+    assert attempt.checkpoint['script_step'] == ('operationentered' if mutation == 'unknown-result' else 'grantvalidated')
+    assert attempt.checkpoint_locked and 'private-' not in json.dumps(attempt.checkpoint)
+
+
+def test_valid_terminal_cannot_hide_trailing_records_or_become_open_evidence():
+    attempt = progress_attempt()
+    attempt.pipe.frames.append({'kind': 'checkpoint', 'stage': 'connected'})
+    with pytest.raises(module.Refused): attempt.script_exchange({})
+    assert attempt.checkpoint['script_step'] == 'operationresult' and attempt.checkpoint_locked
+
+
+def test_progress_deadline_is_not_extended_by_each_short_record(monkeypatch):
+    clock = [0.]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    attempt = progress_attempt()
+    receive = attempt.pipe.receive
+    def slow(deadline):
+        clock[0] += 3.
+        if clock[0] >= deadline: raise module.Refused('protocol-refused')
+        return receive(deadline)
+    attempt.pipe.receive = slow
+    with pytest.raises(module.Refused): attempt.script_exchange({})
+    assert attempt.checkpoint['script_step'] == 'sourceopened' and clock[0] == 12.
+    assert set(attempt.pipe.deadlines) == {10.}
+
+
+def test_several_individually_small_frames_share_one_cumulative_receive_cap():
+    pending = [bytearray(b'{"padding":"' + b'x' * 2500 + b'"}\n') for _ in range(2)]
+    def peek(handle, data, size, read, available, left): available._obj.value = len(pending[0]); return 1
+    def read(handle, output, size, received, overlapped):
+        chunk = bytes(pending[0][:size]); del pending[0][:size]
+        if not pending[0]: pending.pop(0)
+        ctypes.memmove(output, chunk, len(chunk)); received._obj.value = len(chunk); return 1
+    pipe = module.Pipe.__new__(module.Pipe)
+    pipe.api = SimpleNamespace(check=lambda value: value, k=SimpleNamespace(PeekNamedPipe=peek, ReadFile=read))
+    pipe.handle, pipe.buffer, pipe.received = module.Handle(pipe.api, 8), bytearray(), 0
+    assert pipe.receive(float('inf')) == {'padding': 'x' * 2500}
+    with pytest.raises(module.Refused): pipe.receive(float('inf'))
+    assert pipe.received == module.LIMIT + 1
+
+
+@pytest.mark.parametrize('state', ['buffered', 'queued', 'closed', 'other-error', 'deadline'])
+def test_terminal_pipe_boundary_rejects_trailing_or_unconfirmed_completion(monkeypatch, state):
+    clock = [0.]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(module.time, 'sleep', lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(ctypes, 'get_last_error', lambda: 109 if state == 'closed' else 233, raising=False)
+    def peek(handle, data, size, read, available, left):
+        available._obj.value = 1 if state == 'queued' else 0
+        return state not in {'closed', 'other-error'}
+    pipe = module.Pipe.__new__(module.Pipe)
+    pipe.api = SimpleNamespace(k=SimpleNamespace(PeekNamedPipe=peek))
+    pipe.handle, pipe.buffer = module.Handle(pipe.api, 8), bytearray(b'extra' if state == 'buffered' else b'')
+    if state == 'closed': pipe.finish(.03)
+    else:
+        with pytest.raises(module.Refused): pipe.finish(.03)
+    assert clock[0] <= .03
+
+
+@pytest.mark.parametrize('native,expected', [(0, 'signaled'), (258, 'not-signaled'), (0xffffffff, 'unavailable')])
+def test_child_state_is_observed_from_genuine_handle_before_close_without_changing_cleanup(native, expected):
+    calls = []
+    attempt = module.Attempt.__new__(module.Attempt)
+    attempt.checkpoint, attempt.checkpoint_locked = module.checkpoint(), False
+    attempt.closed = attempt.poisoned = False
+    attempt.child = SimpleNamespace(created=True, closed=False, process_handle=111,
+        stop_and_wait=lambda _: calls.append('stop'))
+    attempt.owner = SimpleNamespace(kernel=SimpleNamespace(WaitForSingleObject=lambda handle, ms: calls.append(('signal', handle, ms)) or native),
+        terminate=lambda **_: calls.append('drain'), close=lambda: calls.append('owner-close'))
+    attempt.pipe = SimpleNamespace(close=lambda: calls.append('pipe-close'))
+    attempt.close(); attempt.close()
+    assert calls == [('signal', 111, 0), 'stop', 'drain', 'owner-close', 'pipe-close']
+    assert attempt.checkpoint['child_state'] == expected and attempt.closed
+
+
+def test_checkpoint_failure_stage_survives_cleanup_and_query_failure_is_context_only():
+    attempt = module.Attempt.__new__(module.Attempt)
+    attempt.checkpoint = module.checkpoint(); attempt.checkpoint['parent_step'] = 'bind-client'
+    attempt.checkpoint_locked = True; attempt.closed = attempt.poisoned = False
+    def unavailable(*_): raise OSError('private query sentinel')
+    attempt.child = SimpleNamespace(created=True, closed=False, process_handle=111, stop_and_wait=lambda _: None)
+    attempt.owner = SimpleNamespace(kernel=SimpleNamespace(WaitForSingleObject=unavailable), terminate=lambda **_: None, close=lambda: None)
+    attempt.pipe = SimpleNamespace(close=lambda: None)
+    attempt.close()
+    assert attempt.closed and attempt.checkpoint == {'parent_step': 'bind-client', 'script_step': 'not-started', 'child_state': 'unavailable'}
+
+
+def test_no_signal_query_uses_an_already_closed_creation_record():
+    attempt = module.Attempt.__new__(module.Attempt)
+    attempt.checkpoint = module.checkpoint()
+    attempt.child = SimpleNamespace(created=True, closed=True)
+    attempt.owner = SimpleNamespace(kernel=SimpleNamespace(WaitForSingleObject=lambda *_: pytest.fail('No stale handle query.')))
+    attempt.observe_child()
+    assert attempt.checkpoint['child_state'] == 'unavailable'
+
+
+@pytest.mark.parametrize('value', [None, {}, {'parent_step': 'private-path', 'script_step': 'not-started', 'child_state': 'not-created'},
+    {'parent_step': 'not-started', 'script_step': 'not-started', 'child_state': 1},
+    {'parent_step': 'not-started', 'script_step': 'not-started', 'child_state': 'not-created', 'pid': 123}])
+def test_checkpoint_public_projection_has_exact_three_finite_keys(value):
+    result = successful_receipt(); result['baseline_checkpoint'] = value
+    with pytest.raises(module.Refused): module.public_receipt(result)
+
+
+def test_diagnostic_child_unavailability_never_grants_or_revokes_native_acceptance():
+    value = successful_receipt()
+    value['baseline_checkpoint']['child_state'] = 'unavailable'
+    assert module.public_receipt(value)['keeper_loss_acceptance'] is False
+    assert module.public_receipt(value)['status'] == 'mechanism-observed'
+
+
+@pytest.mark.parametrize('failure,expected', [('pipe', 'create-pipe'), ('create', 'create-owned-process'),
+    ('resume', 'resume-owned-process'), ('bind', 'bind-client')])
+def test_baseline_start_boundaries_are_recorded_before_failure_and_survive_cleanup(monkeypatch, tmp_path, failure, expected):
+    calls = []
+    def refuse(): raise module.Refused('protocol-refused')
+    class Child:
+        created, closed, process_handle = True, False, 111
+        def resume_once(self):
+            calls.append('resume')
+            if failure == 'resume': refuse()
+        def stop_and_wait(self, deadline): calls.append('stop')
+    class Owner:
+        created_children = ()
+        kernel = SimpleNamespace(WaitForSingleObject=lambda *_: 0)
+        def create_suspended(self, *_, **__):
+            calls.append('create')
+            if failure == 'create': refuse()
+            return Child()
+        def terminate(self, **_): calls.append('drain')
+        def close(self): calls.append('owner-close')
+    class Wire:
+        name = 'owned-fixture-pipe'
+        def __init__(self, api):
+            if failure == 'pipe': refuse()
+        def bind(self, child, deadline):
+            calls.append('bind')
+            if failure == 'bind': refuse()
+        def close(self): calls.append('pipe-close')
+    monkeypatch.setattr(module, 'Pipe', Wire)
+    monkeypatch.setattr(module, 'process_module', lambda: SimpleNamespace(WindowsPreparationProcess=Owner))
+    value = module.checkpoint()
+    with pytest.raises(module.Refused):
+        module.Attempt(SimpleNamespace(), lambda name: ['owned-fixture'], tmp_path, checkpoint_value=value)
+    assert value['parent_step'] == expected and value['script_step'] == 'not-started'
+    assert value['child_state'] == ('signaled' if failure in {'resume', 'bind'} else 'not-created')
+    assert 'private' not in json.dumps(value)

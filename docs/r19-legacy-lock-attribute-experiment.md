@@ -91,12 +91,37 @@ ChangeTime changes can be observed as false. They are not hidden or presented
 as exact timestamp preservation. No private path, file ID, raw time, private
 content hash, exception, environment, command or stack is serialized.
 
-The public schema is `proxy-r19-legacy-lock-attribute-mechanism-v1`, scope
+The public schema is `proxy-r19-legacy-lock-attribute-mechanism-v2`, scope
 `authored-local-ntfs-no-writers-mechanism`. It revalidates exact keys, fixed
 ordered observations, enum values, booleans and the known public legacy-source
 hash. Its only successful status is `mechanism-observed`. The final gates stay
 false: production, keeper-loss acceptance, rights and R19 completion; ordinary
 Windows 11 acceptance stays unavailable.
+
+Version2 adds exactly one closed `baseline_checkpoint` object with three finite
+strings: `parent_step`, `script_step` and `child_state`. The parent marks pipe
+creation, owned process creation/resume, client binding, grant send, progress
+receive, result receive and cleanup immediately before the action. On refusal,
+cleanup cannot overwrite the first failed parent action. Child state is only
+not-created, signaled, not-signaled or unavailable, queried through the genuine
+retained creation handle before close. No closed handle, PID lookup or exit code
+supplies it. Query failure is unavailable context; it cannot grant or revoke
+the existing process cleanup or mechanism acceptance requirements.
+
+The same PowerShell child sends fixed ordered progress: connected,
+grantvalidated, sourceopened, hashbound, definitionbound and operationentered.
+Only actual hash equality permits hashbound; only the exact AST checks and
+definition permit definitionbound. The terminal `state` result is unchanged.
+Only a complete typed terminal record supplies operationresult. A stage before
+the function call does not establish that the legacy operation opened.
+
+All received bytes across an Attempt share one cumulative 4KiB cap. Grant,
+progress, terminal and pipe completion share one existing10-second exchange
+deadline, with no per-record extension. Unknown, skipped, duplicate, malformed
+or trailing records refuse the attempt; only the last complete admitted stage
+is retained. Terminal completion requires the peer to close without trailing
+bytes within that deadline. There is no new runtime, process, raw output,
+environment variable, source-function change, pipe-mode change or fallback.
 
 Every owned cleanup stage is attempted independently. A failed handle close is
 sticky and its numeric value is never retried as a possibly reused handle.
@@ -109,6 +134,19 @@ Windows closes files on process termination, but no process-crash experiment or
 establishes power-loss durability.
 
 ## Execution and evidence
+
+The historical version1 attempt at `a1c5e92`,
+[run41225668722](https://github.com/matthias-van-der-galien/Game-immersion-toolkit/actions/runs/41225668722),
+passed57 authored Windows contracts using Python3.12.10 on hosted image
+20261030.294.1. Its source-bound metadata then reported failed /
+legacy-baseline / protocol-refused, no observations, no timestamp booleans and
+unconfirmed-fixture-retained. Root and peer independently verified the provider
+ZIP digest, exact single JSON entry, candidate source, equal before/after
+fingerprints and false gates. No actual legacy Open, READONLY set or owner loss
+was delivered. The phase conflated startup, pipe binding and the script's source
+and operation steps; it established no native cause. It contains no version2
+checkpoint. The new wire and projection need their own reviewed CI publisher
+and actual exact-source Windows attempt; the old negative is not relabeled.
 
 On the selected Windows build host, run the selected 64-bit source
 interpreter directly:
